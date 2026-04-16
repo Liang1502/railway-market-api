@@ -1,10 +1,10 @@
 from fastapi import FastAPI
-from typing import Dict
+from typing import Dict, Set
 
 app = FastAPI()
 
-# 🔥 用來存市場資料（記憶體）
 market_data: Dict[str, dict] = {}
+wishlist: Set[str] = set() # 🌟 新增：雲端許願池
 
 # =============================
 # 📥 接收資料（本機會打這裡）
@@ -14,14 +14,33 @@ def update_data(data: dict):
     symbol = data.get("symbol")
     if symbol:
         market_data[symbol] = data
+        # 🌟 如果這檔股票原本在許願池裡，代表本機已經算好上傳了，將它移出名單
+        if symbol in wishlist:
+            wishlist.remove(symbol)
     return {"status": "ok"}
 
 # =============================
-# 📊 單檔分析
+# 📊 單檔分析（GPT 呼叫這裡）
 # =============================
 @app.get("/analysis-input/{symbol}")
 def get_analysis(symbol: str):
-    return market_data.get(symbol, {"error": "no data"})
+    if symbol in market_data:
+        return market_data[symbol]
+    else:
+        # 🌟 GPT 點了一首沒聽過的歌，加入許願池
+        wishlist.add(symbol)
+        return {
+            "status": "pending", 
+            "error": "data_missing",
+            "message": f"📡 標的 {symbol} 不在監控名單內。已加入雲端許願池，請等待 3 秒後再問一次！"
+        }
+
+# =============================
+# 📥 讓 Mac 領取任務（新增）
+# =============================
+@app.get("/wishlist")
+def get_wishlist():
+    return {"wishlist": list(wishlist)}
 
 # =============================
 # 🔍 掃描市場
@@ -32,7 +51,6 @@ def scan_market():
     long_list = []
 
     for data in market_data.values():
-        # 改用 decision 存在即可進入掃描
         if not data.get("decision"):
             continue
 
@@ -43,15 +61,11 @@ def scan_market():
         short_trigger = entry.get("short_trigger", False)
         long_trigger = entry.get("long_trigger", False)
 
-        # 空方
         if decision in ["short_possible", "avoid_long"] or short_trigger:
             short_list.append(data)
-
-        # 多方
         if decision in ["long_possible", "avoid_short"] or long_trigger:
             long_list.append(data)
 
-    # 排序
     short_list = sorted(short_list, key=lambda x: x["score"])
     long_list = sorted(long_list, key=lambda x: x["score"], reverse=True)
 
