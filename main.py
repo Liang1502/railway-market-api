@@ -7,11 +7,17 @@ app = FastAPI()
 market_data: Dict[str, dict] = {}
 wishlist: Set[str] = set()
 
+MY_SECRET_TOKEN = "ChiaChun_Super_Secret_888"
+
 # =============================
 # 📥 接收資料（本機會打這裡）
 # =============================
 @app.post("/update")
-def update_data(data: dict):
+def update_data(data: dict, authorization: str = Header(None)):
+    # 🌟 檢查通關密語！如果不對，直接踢掉！
+    if authorization != f"Bearer {MY_SECRET_TOKEN}":
+        raise HTTPException(status_code=401, detail="Unauthorized: 滾開！")
+
     symbol = data.get("symbol")
     if symbol:
         market_data[symbol] = data
