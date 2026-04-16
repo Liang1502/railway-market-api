@@ -32,8 +32,8 @@ async def get_analysis(symbol: str):  # 🌟 注意這裡加上了 async
     # 狀況二：全新標的，加入許願池
     wishlist.add(symbol)
     
-    # 🌟 雲端開始憋氣等待 (最多等 5 秒)
-    for _ in range(5):
+    # 🌟 雲端開始憋氣等待 (最多等 10 秒)
+    for _ in range(10):
         await asyncio.sleep(1) # 等待 1 秒
         if symbol in market_data:
             # 你的 Mac 成功把資料傳上來了！立刻回傳給 GPT
@@ -45,7 +45,7 @@ async def get_analysis(symbol: str):  # 🌟 注意這裡加上了 async
     return {
         "status": "pending", 
         "error": "data_missing",
-        "message": f"⚠️ 標的 {symbol} 不在名單內，且本機雷達未在 5 秒內回應。請確認 uploader.py 是否運作中！"
+        "message": f"⚠️ 標的 {symbol} 不在名單內，且本機雷達未在 10 秒內回應。請確認 uploader.py 是否運作中！"
     }
 
 # =============================
