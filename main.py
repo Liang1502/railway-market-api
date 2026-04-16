@@ -1,10 +1,11 @@
 from fastapi import FastAPI
 from typing import Dict, Set
+import asyncio  # 🌟 新增這個，用來讓伺服器稍微等一下
 
 app = FastAPI()
 
 market_data: Dict[str, dict] = {}
-wishlist: Set[str] = set() # 🌟 新增：雲端許願池
+wishlist: Set[str] = set()
 
 # =============================
 # 📥 接收資料（本機會打這裡）
@@ -20,20 +21,32 @@ def update_data(data: dict):
     return {"status": "ok"}
 
 # =============================
-# 📊 單檔分析（GPT 呼叫這裡）
+# 📊 單檔分析（GPT 呼叫這裡，升級長輪詢版）
 # =============================
 @app.get("/analysis-input/{symbol}")
-def get_analysis(symbol: str):
+async def get_analysis(symbol: str):  # 🌟 注意這裡加上了 async
+    # 狀況一：資料已經在雲端了，光速秒答
     if symbol in market_data:
         return market_data[symbol]
-    else:
-        # 🌟 GPT 點了一首沒聽過的歌，加入許願池
-        wishlist.add(symbol)
-        return {
-            "status": "pending", 
-            "error": "data_missing",
-            "message": f"📡 標的 {symbol} 不在監控名單內。已加入雲端許願池，請等待 3 秒後再問一次！"
-        }
+    
+    # 狀況二：全新標的，加入許願池
+    wishlist.add(symbol)
+    
+    # 🌟 雲端開始憋氣等待 (最多等 5 秒)
+    for _ in range(5):
+        await asyncio.sleep(1) # 等待 1 秒
+        if symbol in market_data:
+            # 你的 Mac 成功把資料傳上來了！立刻回傳給 GPT
+            if symbol in wishlist:
+                wishlist.remove(symbol)
+            return market_data[symbol]
+            
+    # 狀況三：等了 5 秒都沒拿到資料 (可能是你 Mac 上的雷達沒開)
+    return {
+        "status": "pending", 
+        "error": "data_missing",
+        "message": f"⚠️ 標的 {symbol} 不在名單內，且本機雷達未在 5 秒內回應。請確認 uploader.py 是否運作中！"
+    }
 
 # =============================
 # 📥 讓 Mac 領取任務（新增）
