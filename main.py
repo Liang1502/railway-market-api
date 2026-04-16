@@ -1,5 +1,5 @@
-from fastapi import FastAPI
-from typing import Dict, Set
+from fastapi import FastAPI, HTTPException, Header  # <--- 確保多了 Header
+from typing import Dict, Set, List
 import asyncio  # 🌟 新增這個，用來讓伺服器稍微等一下
 
 app = FastAPI()
