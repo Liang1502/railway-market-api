@@ -47,7 +47,7 @@ async def get_analysis(symbol: str):  # 🌟 注意這裡加上了 async
                 wishlist.remove(symbol)
             return market_data[symbol]
             
-    # 狀況三：等了 5 秒都沒拿到資料 (可能是你 Mac 上的雷達沒開)
+    # 狀況三：等了 10 秒都沒拿到資料 (可能是你 Mac 上的雷達沒開)
     return {
         "status": "pending", 
         "error": "data_missing",
@@ -70,8 +70,7 @@ def scan_market():
     long_list = []
 
     for data in market_data.values():
-        if not data.get("decision"):
-            continue
+        if not data.get("decision"): continue
 
         score = data.get("score", 50)
         decision = data.get("decision")
