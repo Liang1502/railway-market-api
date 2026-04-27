@@ -1,13 +1,18 @@
-from fastapi import FastAPI, HTTPException, Header  # <--- 確保多了 Header
+from fastapi import FastAPI, HTTPException, Header
 from typing import Dict, Set, List
-import asyncio  # 🌟 新增這個，用來讓伺服器稍微等一下
+from datetime import datetime
+import asyncio
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI()
 
 market_data: Dict[str, dict] = {}
 wishlist: Set[str] = set()
 
-MY_SECRET_TOKEN = "ChiaChun_Super_Secret_888"
+MY_SECRET_TOKEN = os.getenv("API_SECRET_TOKEN", "ChiaChun_Super_Secret_888")
 
 # =============================
 # 📥 接收資料（本機會打這裡）
@@ -20,8 +25,8 @@ def update_data(data: dict, authorization: str = Header(None)):
 
     symbol = data.get("symbol")
     if symbol:
+        data["_server_ts"] = datetime.utcnow().isoformat()
         market_data[symbol] = data
-        # 🌟 如果這檔股票原本在許願池裡，代表本機已經算好上傳了，將它移出名單
         if symbol in wishlist:
             wishlist.remove(symbol)
     return {"status": "ok"}
