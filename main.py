@@ -13,9 +13,12 @@ except ImportError:
 app = FastAPI()
 
 market_data: Dict[str, dict] = {}
-wishlist: Set[str] = set()
+wishlist:    Set[str] = set()
+watch_set:   Set[str] = set()   # watch.py 請求的標的，永久追蹤不清除
 
 MY_SECRET_TOKEN = os.getenv("API_SECRET_TOKEN", "ChiaChun_Super_Secret_888")
+
+STALE_SECS = 90   # 超過此秒數視為過期，重新觸發 wishlist
 
 # =============================
 # 📥 接收資料（uploader.py 打這裡）
@@ -63,10 +66,22 @@ async def get_analysis_batch(symbols: str):
     if not symbol_list:
         raise HTTPException(status_code=400, detail="symbols 不可為空")
 
+    # 所有請求的標的自動加入持久追蹤清單
+    for sym in symbol_list:
+        watch_set.add(sym)
+
     result = {}
     pending = []
     for sym in symbol_list:
         if sym in market_data:
+            # 資料過期則重新觸發 uploader，但仍先回傳舊值
+            ts_str = market_data[sym].get("_server_ts", "")
+            try:
+                age = (datetime.utcnow() - datetime.fromisoformat(ts_str)).total_seconds()
+            except Exception:
+                age = 9999
+            if age > STALE_SECS:
+                wishlist.add(sym)
             result[sym] = market_data[sym]
         else:
             wishlist.add(sym)
@@ -94,11 +109,25 @@ async def get_analysis_batch(symbols: str):
     return result
 
 # =============================
-# 📋 許願池（uploader.py 領取任務）
+# 📋 許願池（一次性任務）
 # =============================
 @app.get("/wishlist")
 def get_wishlist():
     return {"wishlist": list(wishlist)}
+
+# =============================
+# 👁 持久追蹤清單（uploader.py 定期拉取）
+# =============================
+@app.get("/watch-list")
+def get_watch_list():
+    return {"symbols": list(watch_set)}
+
+@app.delete("/watch-list/{symbol}")
+def remove_from_watch_list(symbol: str, authorization: str = Header(None)):
+    if authorization != f"Bearer {MY_SECRET_TOKEN}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    watch_set.discard(symbol)
+    return {"status": "ok", "remaining": list(watch_set)}
 
 # =============================
 # 🔍 市場掃描（radar.py 使用）
@@ -137,4 +166,8 @@ def scan_market():
 # =============================
 @app.get("/health")
 def health():
-    return {"status": "ok", "symbols_cached": len(market_data)}
+    return {
+        "status":          "ok",
+        "symbols_cached":  len(market_data),
+        "watch_set_count": len(watch_set),
+    }
