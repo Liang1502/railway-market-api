@@ -146,9 +146,9 @@ def scan_market():
         short_trigger = entry.get("short_trigger", False)
         long_trigger  = entry.get("long_trigger",  False)
 
-        if decision in ("short_possible", "avoid_long") or short_trigger:
+        if decision == "short_possible" or short_trigger:
             short_list.append(data)
-        if decision in ("long_possible", "avoid_short") or long_trigger:
+        if decision == "long_possible" or long_trigger:
             long_list.append(data)
 
     short_list.sort(key=lambda x: x.get("score", 50))
