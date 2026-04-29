@@ -1,0 +1,16 @@
+# Web API
+fastapi
+uvicorn
+python-dotenv
+
+# HTTP client (uploader.py, watch.py)
+requests
+
+# Data analysis (backtest.py)
+numpy
+pandas
+pyarrow
+
+# NOTE: scanner_v7 is a private local module (not on PyPI).
+# Place scanner_v7.py in the project root before running backtest.py.
+# fubon_neo is the Fubon Securities SDK — install from the vendor package.

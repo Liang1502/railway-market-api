@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+log/
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Backtest cache & results
+backtest_cache/
+backtest_results/
+
+# Personal brokerage position files (contain account data)
+*.csv
+positions.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
