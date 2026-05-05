@@ -20,6 +20,16 @@ MY_SECRET_TOKEN = os.getenv("API_SECRET_TOKEN", "ChiaChun_Super_Secret_888")
 
 STALE_SECS = 90   # 超過此秒數視為過期，重新觸發 wishlist
 
+def cache_age_secs(data: dict) -> float:
+    ts_str = data.get("_server_ts", "")
+    try:
+        return (datetime.utcnow() - datetime.fromisoformat(ts_str)).total_seconds()
+    except Exception:
+        return 9999
+
+def is_stale(data: dict) -> bool:
+    return cache_age_secs(data) > STALE_SECS
+
 # =============================
 # 📥 接收資料（uploader.py 打這裡）
 # =============================
@@ -40,8 +50,23 @@ def update_data(data: dict, authorization: str = Header(None)):
 # =============================
 @app.get("/analysis-input/{symbol}")
 async def get_analysis(symbol: str):
-    if symbol in market_data:
-        return market_data[symbol]
+    cached = market_data.get(symbol)
+    if cached and not is_stale(cached):
+        return cached
+
+    if cached:
+        old_ts = cached.get("_server_ts", "")
+        wishlist.add(symbol)
+        for _ in range(10):
+            await asyncio.sleep(1)
+            fresh = market_data.get(symbol)
+            if fresh and fresh.get("_server_ts", "") != old_ts and not is_stale(fresh):
+                wishlist.discard(symbol)
+                return fresh
+        stale_data = dict(cached)
+        stale_data["_stale"] = True
+        stale_data["_age_secs"] = int(cache_age_secs(cached))
+        return stale_data
 
     wishlist.add(symbol)
 
@@ -72,17 +97,15 @@ async def get_analysis_batch(symbols: str):
 
     result = {}
     pending = []
+    stale_pending = {}
     for sym in symbol_list:
         if sym in market_data:
-            # 資料過期則重新觸發 uploader，但仍先回傳舊值
-            ts_str = market_data[sym].get("_server_ts", "")
-            try:
-                age = (datetime.utcnow() - datetime.fromisoformat(ts_str)).total_seconds()
-            except Exception:
-                age = 9999
-            if age > STALE_SECS:
+            if is_stale(market_data[sym]):
                 wishlist.add(sym)
-            result[sym] = market_data[sym]
+                pending.append(sym)
+                stale_pending[sym] = market_data[sym].get("_server_ts", "")
+            else:
+                result[sym] = market_data[sym]
         else:
             wishlist.add(sym)
             pending.append(sym)
@@ -93,19 +116,27 @@ async def get_analysis_batch(symbols: str):
         await asyncio.sleep(1)
         still = []
         for sym in pending:
-            if sym in market_data:
-                result[sym] = market_data[sym]
+            data = market_data.get(sym)
+            old_ts = stale_pending.get(sym)
+            if data and (old_ts is None or data.get("_server_ts", "") != old_ts):
+                result[sym] = data
                 wishlist.discard(sym)
             else:
                 still.append(sym)
         pending = still
 
     for sym in pending:
-        result[sym] = {
-            "symbol": sym,
-            "status": "pending",
-            "message": "uploader 尚未回應"
-        }
+        if sym in market_data:
+            data = dict(market_data[sym])
+            data["_stale"] = True
+            data["_age_secs"] = int(cache_age_secs(market_data[sym]))
+            result[sym] = data
+        else:
+            result[sym] = {
+                "symbol": sym,
+                "status": "pending",
+                "message": "uploader 尚未回應"
+            }
     return result
 
 # =============================
