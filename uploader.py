@@ -688,7 +688,7 @@ def compute_v6_score(symbol, data):
 
     # 系統否決：亮燈鎖死或無成交量時 V6 強制壓至負值，避免其他指標救回
     long_reason = str((data.get("entry_signal") or {}).get("long_reason") or "")
-    if "no_trade" in str(data.get("decision", "")) or "亮燈" in long_reason or "7%" in long_reason:
+    if "no_trade" in str(data.get("decision", "")) or "亮燈" in long_reason or "7% 死亡" in long_reason:
         score = min(score, -10)
         if "系統禁令" not in tags:
             tags.append("系統禁令")
@@ -906,14 +906,15 @@ def build_payload(symbol, current_price_hint=None):
 
     kd_sig = "none"
     if k_v is not None and d_v is not None:
-        prev = _prev_kd.get(symbol)
-        if prev is not None:
-            pk, pd = prev
-            if pk < pd and k_v >= d_v:
-                kd_sig = "gold_cross"
-            elif pk > pd and k_v <= d_v:
-                kd_sig = "death_cross"
-        _prev_kd[symbol] = (k_v, d_v)
+        with lock:
+            prev = _prev_kd.get(symbol)
+            if prev is not None:
+                pk, pd = prev
+                if pk < pd and k_v >= d_v:
+                    kd_sig = "gold_cross"
+                elif pk > pd and k_v <= d_v:
+                    kd_sig = "death_cross"
+            _prev_kd[symbol] = (k_v, d_v)
 
     data.update({
         "k_1min":        k_v,

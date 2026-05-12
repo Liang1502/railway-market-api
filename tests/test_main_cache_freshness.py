@@ -125,7 +125,7 @@ def test_load_watch_set_returns_symbols_from_file(tmp_watch_file):
 
 def test_save_watch_set_writes_current_set(tmp_watch_file):
     main.watch_set.update({"2330", "2454"})
-    main._save_watch_set()
+    asyncio.run(main._save_watch_set())
     with open(tmp_watch_file) as f:
         data = json.load(f)
     assert set(data["symbols"]) == {"2330", "2454"}
@@ -156,7 +156,7 @@ def test_batch_skips_save_when_already_tracked(monkeypatch, tmp_watch_file):
 def test_remove_from_watch_list_persists_removal(tmp_watch_file):
     main.watch_set.update({"2330", "2454"})
 
-    main.remove_from_watch_list("2330", authorization=f"Bearer {main.MY_SECRET_TOKEN}")
+    asyncio.run(main.remove_from_watch_list("2330", authorization=f"Bearer {main.MY_SECRET_TOKEN}"))
 
     with open(tmp_watch_file) as f:
         data = json.load(f)
@@ -167,6 +167,6 @@ def test_remove_from_watch_list_persists_removal(tmp_watch_file):
 def test_remove_from_watch_list_skips_save_when_not_present(tmp_watch_file):
     main.watch_set.add("2454")
 
-    main.remove_from_watch_list("2330", authorization=f"Bearer {main.MY_SECRET_TOKEN}")
+    asyncio.run(main.remove_from_watch_list("2330", authorization=f"Bearer {main.MY_SECRET_TOKEN}"))
 
     assert not os.path.exists(tmp_watch_file)

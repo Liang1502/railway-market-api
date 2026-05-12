@@ -33,6 +33,8 @@ import sys
 import os
 import time
 import json
+import logging
+import tempfile
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -63,14 +65,14 @@ def _atr_pcts(sym: str) -> tuple:
             y_high  = safe_float(d.get("y_high"))
             y_low   = safe_float(d.get("y_low"))
             y_close = safe_float(d.get("y_close"))
-            if y_high and y_low and y_close and y_close > 0:
+            if y_high is not None and y_low is not None and y_close and y_close > 0:
                 atr = (y_high - y_low) / y_close
                 stop = max(0.015, min(0.03,  atr * 0.8))
                 t1   = max(0.02,  min(0.05,  atr * 1.0))
                 t2   = max(0.03,  min(0.07,  atr * 1.5))
                 return stop, t1, t2
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("_atr_pcts %s: %s", sym, e)
     return STOP_PCT, T1_PCT, T2_PCT
 
 DATA_STALE_WARN  = 60   # 超過幾秒顯示黃色警告
@@ -108,8 +110,10 @@ def load_positions() -> dict:
         return {}
 
 def save_positions(data: dict):
-    with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
+    tmp = POSITIONS_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, POSITIONS_FILE)
 
 def load_trades() -> list:
     try:
@@ -122,8 +126,10 @@ def load_trades() -> list:
         return []
 
 def save_trades(trades: list):
-    with open(TRADES_FILE, "w", encoding="utf-8") as f:
+    tmp = TRADES_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(trades, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, TRADES_FILE)
 
 def _validate_positions(positions: dict) -> dict:
     """Drop positions whose required numeric fields are missing or zero."""
@@ -259,7 +265,7 @@ def compute_strategy(pos: dict, price: float, ind: dict) -> tuple:
     t2        = safe_float(pos.get("t2"))
 
     if not entry or stop is None or t1 is None or t2 is None:
-        return "⚠️ 部位價位資料異常，請確認 entry/stop/t1/t2", "stop"
+        return "⚠️ 部位價位資料異常，請確認 entry/stop/t1/t2", "error"
 
     k         = safe_float(ind.get("k_1min"))
     d         = safe_float(ind.get("d_1min"))
@@ -544,6 +550,10 @@ def cmd_close(args):
     entry     = safe_float(pos.get("entry"))
     direction = pos.get("direction")
 
+    if entry is None:
+        print(f"[ERROR] {sym} 部位缺少進場價，無法計算損益")
+        return
+
     if direction == "long":
         pnl_pct = (exit_price - entry) / entry * 100
         pnl_pts = exit_price - entry
@@ -585,19 +595,22 @@ def cmd_history(args):
         n = int(args[0])
     recent = trades[-n:]
 
-    wins      = sum(1 for t in recent if t["pnl_pct"] >= 0)
-    total_pnl = sum(t["pnl_pct"] for t in recent)
+    wins      = sum(1 for t in recent if t.get("pnl_pct", 0) >= 0)
+    total_pnl = sum(t.get("pnl_pct", 0) for t in recent)
     win_rate  = wins / len(recent) * 100
 
     print(f"📊 最近 {len(recent)} 筆交易  勝率:{win_rate:.0f}%  累積損益:{total_pnl:+.2f}%")
     print("─" * 70)
     for t in recent:
-        mark      = "✅" if t["pnl_pct"] >= 0 else "❌"
-        dir_label = "多↑" if t["direction"] == "long" else "空↓"
-        print(f"  {mark} {t['symbol']:<6} {dir_label}  "
-              f"進:{t['entry']}  出:{t['exit']}  "
-              f"{t['pnl_pts']:+.2f}點 ({t['pnl_pct']:+.2f}%)  "
-              f"{t['exit_time']}")
+        pnl_pct   = t.get("pnl_pct", 0)
+        pnl_pts   = t.get("pnl_pts", 0)
+        direction = t.get("direction", "long")
+        mark      = "✅" if pnl_pct >= 0 else "❌"
+        dir_label = "多↑" if direction == "long" else "空↓"
+        print(f"  {mark} {t.get('symbol', '?'):<6} {dir_label}  "
+              f"進:{t.get('entry', '?')}  出:{t.get('exit', '?')}  "
+              f"{pnl_pts:+.2f}點 ({pnl_pct:+.2f}%)  "
+              f"{t.get('exit_time', '')}")
 
 def cmd_list():
     positions = load_positions()

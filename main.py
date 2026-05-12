@@ -3,7 +3,9 @@ from typing import Dict, Set
 from datetime import datetime
 import asyncio
 import json
+import logging
 import os
+import tempfile
 
 try:
     from dotenv import load_dotenv
@@ -13,7 +15,8 @@ except ImportError:
 
 app = FastAPI()
 
-WATCH_SET_FILE = "watch_set.json"
+WATCH_SET_FILE  = "watch_set.json"
+_watch_set_lock = asyncio.Lock()
 
 market_data: Dict[str, dict] = {}
 wishlist:    Set[str] = set()
@@ -23,16 +26,26 @@ def _load_watch_set() -> Set[str]:
     try:
         with open(WATCH_SET_FILE) as f:
             return set(json.load(f).get("symbols", []))
+    except FileNotFoundError:
+        return set()
     except Exception:
+        logging.exception("watch_set load failed — starting with empty set")
         return set()
 
 
-def _save_watch_set() -> None:
+async def _save_watch_set() -> None:
+    dir_name = os.path.dirname(os.path.abspath(WATCH_SET_FILE))
     try:
-        with open(WATCH_SET_FILE, "w") as f:
-            json.dump({"symbols": list(watch_set)}, f)
+        fd, tmp = tempfile.mkstemp(dir=dir_name, prefix=".watch_set_")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump({"symbols": list(watch_set)}, f)
+            os.replace(tmp, WATCH_SET_FILE)
+        except Exception:
+            os.unlink(tmp)
+            raise
     except Exception:
-        pass
+        logging.exception("watch_set save failed")
 
 
 watch_set: Set[str] = _load_watch_set()   # watch.py 請求的標的，永久追蹤不清除
@@ -120,11 +133,12 @@ async def get_analysis_batch(symbols: str):
         raise HTTPException(status_code=400, detail="symbols 不可為空")
 
     # 所有請求的標的自動加入持久追蹤清單
-    new_syms = [s for s in symbol_list if s not in watch_set]
-    for sym in new_syms:
-        watch_set.add(sym)
-    if new_syms:
-        _save_watch_set()
+    async with _watch_set_lock:
+        new_syms = [s for s in symbol_list if s not in watch_set]
+        for sym in new_syms:
+            watch_set.add(sym)
+        if new_syms:
+            await _save_watch_set()
 
     result = {}
     pending = []
@@ -185,12 +199,13 @@ def get_watch_list():
     return {"symbols": list(watch_set)}
 
 @app.delete("/watch-list/{symbol}")
-def remove_from_watch_list(symbol: str, authorization: str = Header(None)):
+async def remove_from_watch_list(symbol: str, authorization: str = Header(None)):
     if authorization != f"Bearer {MY_SECRET_TOKEN}":
         raise HTTPException(status_code=401, detail="Unauthorized")
-    if symbol in watch_set:
-        watch_set.discard(symbol)
-        _save_watch_set()
+    async with _watch_set_lock:
+        if symbol in watch_set:
+            watch_set.discard(symbol)
+            await _save_watch_set()
     return {"status": "ok", "remaining": list(watch_set)}
 
 # =============================

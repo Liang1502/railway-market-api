@@ -214,21 +214,21 @@ class TestComputeStrategyShort:
 # ── Guard & validation tests ──────────────────────────────────────────────────
 
 class TestGuards:
-    def test_entry_zero_returns_stop(self):
-        """entry=0 must not divide-by-zero; returns "stop" urgency."""
+    def test_entry_zero_returns_error(self):
+        """entry=0 must not divide-by-zero; returns "error" urgency (not "stop")."""
         pos = {"direction": "long", "entry": 0, "stop": 0, "t1": 0, "t2": 0}
         _, urgency = compute_strategy(pos, price=100.0, ind=_ind())
-        assert urgency == "stop"
+        assert urgency == "error"
 
-    def test_entry_none_returns_stop(self):
+    def test_entry_none_returns_error(self):
         pos = {"direction": "long", "entry": None, "stop": None, "t1": None, "t2": None}
         _, urgency = compute_strategy(pos, price=100.0, ind=_ind())
-        assert urgency == "stop"
+        assert urgency == "error"
 
-    def test_entry_zero_short_returns_stop(self):
+    def test_entry_zero_short_returns_error(self):
         pos = {"direction": "short", "entry": 0, "stop": 0, "t1": 0, "t2": 0}
         _, urgency = compute_strategy(pos, price=100.0, ind=_ind())
-        assert urgency == "stop"
+        assert urgency == "error"
 
 
 class TestValidatePositions:
