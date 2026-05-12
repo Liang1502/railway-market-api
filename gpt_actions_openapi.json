@@ -1,0 +1,274 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Daytrade Analyzer API",
+    "version": "2.1.0",
+    "description": "提供台股盤中技術分析與掃盤功能，輔助當沖決策。"
+  },
+  "servers": [
+    {
+      "url": "https://web-production-641b.up.railway.app"
+    }
+  ],
+  "paths": {
+    "/analysis-input/{symbol}": {
+      "get": {
+        "operationId": "getAnalysis",
+        "summary": "取得單一股票盤中分析資料",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "required": true,
+            "description": "股票代碼，例如 2330",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功取得分析資料，或回傳 pending/stale 狀態",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/scan": {
+      "get": {
+        "operationId": "scanMarket",
+        "summary": "掃描全市場機會標的",
+        "responses": {
+          "200": {
+            "description": "成功取得掃描結果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AnalysisResult": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["pending"],
+            "description": "pending 代表 uploader 尚未回補此標的資料，禁止分析"
+          },
+          "message": {
+            "type": "string"
+          },
+          "_stale": {
+            "type": "boolean",
+            "description": "true 代表資料已過期，只可回報資料過期風險"
+          },
+          "_age_secs": {
+            "type": "integer",
+            "description": "資料年齡秒數"
+          },
+          "symbol": {
+            "type": "string",
+            "description": "股票代號"
+          },
+          "name": {
+            "type": ["string", "null"],
+            "description": "股票名稱；若為 null，GPT 不可自行猜測"
+          },
+          "decision": {
+            "type": "string",
+            "enum": ["no_trade", "observe", "avoid_long", "avoid_short", "long_possible", "short_possible"],
+            "description": "系統決策"
+          },
+          "score": {
+            "type": "integer",
+            "description": "原始技術分析分數 0-100"
+          },
+          "signal_grade": {
+            "type": "string",
+            "enum": ["A_long", "A_short", "B_long", "B_short", "C"],
+            "description": "含方向的訊號等級"
+          },
+          "trend": {
+            "type": "string",
+            "enum": ["up", "down", "neutral"]
+          },
+          "reversal": {
+            "type": ["string", "null"]
+          },
+          "trap": {
+            "type": ["string", "null"]
+          },
+          "market_type": {
+            "type": "string",
+            "enum": ["trend", "range", "reversal", "trap"]
+          },
+          "k_1min": {
+            "type": ["number", "null"]
+          },
+          "d_1min": {
+            "type": ["number", "null"]
+          },
+          "kd_signal": {
+            "type": "string",
+            "enum": ["gold_cross", "death_cross", "none"]
+          },
+          "vwap_1min": {
+            "type": ["number", "null"],
+            "description": "盤中 VWAP，盤後為 null"
+          },
+          "volume_ratio": {
+            "type": ["number", "null"]
+          },
+          "volume_expand": {
+            "type": ["boolean", "null"]
+          },
+          "v6_score": {
+            "type": ["number", "null"],
+            "description": "V6 綜合評分：>60 強多、30~60 中性偏多、0~30 弱、<0 偏空"
+          },
+          "v6_tags": {
+            "type": "string",
+            "description": "V6 觸發標籤，用 | 分隔"
+          },
+          "score_price": {
+            "type": ["number", "null"]
+          },
+          "y_high": {
+            "type": ["number", "null"]
+          },
+          "y_low": {
+            "type": ["number", "null"]
+          },
+          "y_close": {
+            "type": ["number", "null"]
+          },
+          "y_open": {
+            "type": ["number", "null"]
+          },
+          "y_date": {
+            "type": ["string", "null"]
+          },
+          "entry_signal": {
+            "$ref": "#/components/schemas/EntrySignal"
+          },
+          "entry_zone": {
+            "$ref": "#/components/schemas/EntryZone"
+          },
+          "risk_control": {
+            "$ref": "#/components/schemas/RiskControl"
+          },
+          "structure": {
+            "$ref": "#/components/schemas/Structure"
+          },
+          "price": {
+            "$ref": "#/components/schemas/Price"
+          }
+        }
+      },
+      "EntrySignal": {
+        "type": "object",
+        "properties": {
+          "short_trigger": {
+            "type": "boolean"
+          },
+          "short_reason": {
+            "type": ["string", "null"]
+          },
+          "long_trigger": {
+            "type": "boolean"
+          },
+          "long_reason": {
+            "type": ["string", "null"]
+          }
+        }
+      },
+      "EntryZone": {
+        "type": "object",
+        "properties": {
+          "lower": {
+            "type": ["number", "null"]
+          },
+          "upper": {
+            "type": ["number", "null"]
+          }
+        }
+      },
+      "RiskControl": {
+        "type": "object",
+        "properties": {
+          "invalid_price": {
+            "type": ["number", "null"],
+            "description": "絕對停損價，觸及必須無條件出場"
+          },
+          "dynamic_stop": {
+            "type": ["number", "null"]
+          },
+          "vwap_distance": {
+            "type": ["number", "null"],
+            "description": "最新價相對 vwap_1min 的乖離率百分比；盤後可為 null"
+          }
+        }
+      },
+      "Structure": {
+        "type": "object",
+        "properties": {
+          "dominance": {
+            "type": "string",
+            "enum": ["buy", "sell", "neutral"]
+          },
+          "pressure_ratio": {
+            "type": ["number", "null"]
+          }
+        }
+      },
+      "Price": {
+        "type": "object",
+        "properties": {
+          "last": {
+            "type": ["number", "null"]
+          },
+          "change_percent": {
+            "type": "number"
+          }
+        }
+      },
+      "ScanResult": {
+        "type": "object",
+        "properties": {
+          "short_count": {
+            "type": "integer"
+          },
+          "long_count": {
+            "type": "integer"
+          },
+          "top_short": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AnalysisResult"
+            }
+          },
+          "top_long": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AnalysisResult"
+            }
+          }
+        }
+      }
+    }
+  }
+}

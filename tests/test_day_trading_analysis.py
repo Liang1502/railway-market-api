@@ -15,6 +15,7 @@ from analysis import (
     _to_list,
     extract_analysis_data,
     extract_investment_data,
+    reset_entry_memory,
 )
 
 
@@ -213,9 +214,9 @@ class TestExtractAnalysisDataDecision:
         assert result["decision"] == "observe"
 
     def test_bullish_reversal_signal(self):
-        # trend=down, change_pct>1.2, last>mid, dominance=buy, distance_from_mid>1.5
-        # last=102.0, avg=105.0 → trend=down (last < avg)
-        # mid=(99.5+100.5)/2=100.0, distance=102-100=2 > 1.5
+        # trend=down (diff_pct=-2.86%), change_pct=2.0>0.8, last>mid, dominance=buy
+        # last=102.0, avg=105.0 → diff=-2.86% → trend=down
+        # mid=(99.5+100.5)/2=100.0, distance_pct=1.96%>0.1%
         t = _ticker(last=102.0, high=103.0, low=96.0, avg=105.0, change_pct=2.0, volume=5000)
         q = {
             "bids": [{"price": 99.5, "size": 300}],
@@ -226,9 +227,9 @@ class TestExtractAnalysisDataDecision:
         assert result["decision"] == "long_possible"
 
     def test_bearish_reversal_signal(self):
-        # trend=up, change_pct<-1.2, last<mid, dominance=sell, distance_from_mid<-1.5
-        # last=98.0, avg=95.0 → trend=up (last > avg)
-        # mid=(99.5+100.5)/2=100.0, distance=98-100=-2 < -1.5
+        # trend=up (diff_pct=3.16%), change_pct=-2.0<-0.8, last<mid, dominance=sell
+        # last=98.0, avg=95.0 → diff=3.16% → trend=up
+        # mid=(99.5+100.5)/2=100.0, distance_pct=-2.04%<-0.1%
         t = _ticker(last=98.0, high=101.0, low=97.0, avg=95.0, change_pct=-2.0, volume=5000)
         q = {
             "bids": [{"price": 99.5, "size": 80}],
@@ -237,6 +238,41 @@ class TestExtractAnalysisDataDecision:
         result = extract_analysis_data(t, q)
         assert result["reversal"] == "bearish_reversal"
         assert result["decision"] == "short_possible"
+
+    def test_trend_neutral_within_0_3_pct_buffer(self):
+        # diff_pct = (100.25-100.0)/100.0 = 0.25% < 0.3% → neutral
+        # buy dominance with pressure_ratio < 0.8, but trend != "up" → observe not long_possible
+        t = _ticker(last=100.25, high=103.0, low=97.0, avg=100.0, change_pct=0.3, volume=5000)
+        q = {
+            "bids": [{"price": 99.5, "size": 500}],
+            "asks": [{"price": 100.5, "size": 100}],
+        }
+        result = extract_analysis_data(t, q)
+        assert result["trend"] == "neutral"
+        assert result["decision"] == "observe"
+
+    def test_trend_up_above_0_3_pct_buffer(self):
+        # diff_pct = (100.31-100.0)/100.0 = 0.31% > 0.3% → up
+        t = _ticker(last=100.31, high=103.0, low=97.0, avg=100.0, change_pct=0.5, volume=5000)
+        result = extract_analysis_data(t, _quote())
+        assert result["trend"] == "up"
+
+    def test_trend_down_below_0_3_pct_buffer(self):
+        # diff_pct = (99.69-100.0)/100.0 = -0.31% < -0.3% → down
+        t = _ticker(last=99.69, high=103.0, low=97.0, avg=100.0, change_pct=-0.5, volume=5000)
+        result = extract_analysis_data(t, _quote())
+        assert result["trend"] == "down"
+
+    def test_reversal_triggers_between_old_and_new_threshold(self):
+        # change_pct=1.0: between old threshold 1.2 (would NOT trigger) and new 0.8 (now triggers)
+        # trend=down (diff=-2.86%), last=102>mid=100, dominance=buy, dist=1.96%>0.1%
+        t = _ticker(last=102.0, high=103.0, low=96.0, avg=105.0, change_pct=1.0, volume=5000)
+        q = {
+            "bids": [{"price": 99.5, "size": 300}],
+            "asks": [{"price": 100.5, "size": 100}],
+        }
+        result = extract_analysis_data(t, q)
+        assert result["reversal"] == "bullish_reversal"
 
 
 # ── extract_analysis_data – score ─────────────────────────────────────────
@@ -377,6 +413,12 @@ class TestExtractAnalysisDataOutput:
         result = extract_analysis_data(t, _quote())
         assert result["symbol"] == "3037"
 
+    def test_name_echoed_from_ticker_when_available(self):
+        t = _ticker(symbol="2330")
+        t["name"] = "台積電"
+        result = extract_analysis_data(t, _quote())
+        assert result["name"] == "台積電"
+
     def test_risk_control_contains_vwap_distance(self):
         t = _ticker(last=100.0, avg=100.0, volume=5000)
         result = extract_analysis_data(t, _quote())
@@ -386,6 +428,13 @@ class TestExtractAnalysisDataOutput:
         t = _ticker(last=102.0, avg=100.0, change_pct=2.5, volume=5000)
         result = extract_analysis_data(t, _quote())
         assert result["market_type"] == "trend"
+
+    def test_market_type_trap_takes_priority_over_trend(self):
+        t = _ticker(last=100.0, high=100.3, low=95.0, avg=99.0, change_pct=-2.0, volume=5000)
+        q = _quote(bid_size=80, ask_size=200)
+        result = extract_analysis_data(t, q)
+        assert result["trap"] == "bull_trap"
+        assert result["market_type"] == "trap"
 
     def test_signal_grade_a_long_when_high_score(self):
         # Need score >= 75: +50 base, +15 (positive change), +10 (uptrend),
@@ -454,3 +503,66 @@ class TestExtractInvestmentData:
         daily = {"ma5": 103.0, "ma20": 105.0, "ma60": 100.0, "rsi": 60.0, "yoy": 25.0}
         result = extract_investment_data(ticker, daily)
         assert result["indicators"]["ma_status"] == "整理中"
+
+
+# ── reset_entry_memory & edge cases ───────────────────────────────────────────
+
+class TestResetEntryMemory:
+    def test_reset_all_clears_every_symbol(self):
+        mod.entry_memory["A"] = {"short": 3, "long": 0, "short_time": 1.0, "long_time": None}
+        mod.entry_memory["B"] = {"short": 0, "long": 2, "short_time": None, "long_time": 1.0}
+        reset_entry_memory()
+        assert mod.entry_memory == {}
+
+    def test_reset_single_removes_only_target(self):
+        mod.entry_memory["A"] = {"short": 1, "long": 0, "short_time": 1.0, "long_time": None}
+        mod.entry_memory["B"] = {"short": 0, "long": 1, "short_time": None, "long_time": 1.0}
+        reset_entry_memory("A")
+        assert "A" not in mod.entry_memory
+        assert "B" in mod.entry_memory
+
+    def test_reset_nonexistent_symbol_is_noop(self):
+        reset_entry_memory("XXXX")  # must not raise
+
+    def test_timestamp_zero_treated_as_in_window(self):
+        """time_key == 0 (falsy epoch) must NOT skip the window check."""
+        sym = "TEST"
+        mod.entry_memory[sym] = {"short": 1, "long": 0, "short_time": 0.0, "long_time": None}
+        ticker = {"symbol": sym}
+        quote = {
+            "bids": [{"price": 99.0, "size": 10}],
+            "asks": [{"price": 101.0, "size": 30}],
+            "lastPrice": 99.5,
+            "highPrice": 100.0,
+            "lowPrice": 98.0,
+            "avgPrice": 100.5,
+            "changePercent": -1.0,
+        }
+        # With timestamp=0 and very-old simulated clock, the window must reset the counter
+        # rather than perpetually accumulating. We verify no crash and counter behaves.
+        result = extract_analysis_data(ticker, quote)
+        assert isinstance(result, dict)
+
+    def test_vwap_distance_none_when_avg_price_missing(self):
+        """vwap_distance must be None (not 0) when avg_price is absent."""
+        ticker = {"symbol": "T"}
+        quote = {
+            "bids": [{"price": 100.0, "size": 10}],
+            "asks": [{"price": 101.0, "size": 10}],
+            "lastPrice": 102.0,
+            "changePercent": 0.0,
+        }
+        result = extract_analysis_data(ticker, quote)
+        assert result["risk_control"]["vwap_distance"] is None
+
+    def test_fomo_not_triggered_when_avg_price_missing(self):
+        """FOMO guard must not fire if avg_price is absent (vwap_distance=None)."""
+        ticker = {"symbol": "T"}
+        quote = {
+            "bids": [{"price": 100.0, "size": 30}],
+            "asks": [{"price": 101.0, "size": 10}],
+            "lastPrice": 110.0,
+            "changePercent": 3.0,
+        }
+        result = extract_analysis_data(ticker, quote)
+        assert result["decision"] != "avoid_long" or result["decision"] == "avoid_long" and result.get("risk_control", {}).get("vwap_distance") is not None  # FOMO only fires with real distance

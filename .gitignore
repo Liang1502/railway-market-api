@@ -35,6 +35,10 @@ backtest_results/
 *.csv
 positions.json
 
+# Runtime state files
+trades.json
+watch_set.json
+
 # IDE
 .idea/
 .vscode/

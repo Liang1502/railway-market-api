@@ -68,6 +68,24 @@ def _to_list(val):
         return result
     return []
 
+
+def _extract_stock_name(*sources):
+    for key in (
+        "name",
+        "stock_name",
+        "stockName",
+        "symbol_name",
+        "symbolName",
+        "shortName",
+        "companyName",
+        "description",
+    ):
+        for source in sources:
+            val = _get(source, key)
+            if val:
+                return str(val)
+    return None
+
 # =============================================
 # 主要分析函數
 # =============================================
@@ -79,6 +97,7 @@ def extract_analysis_data(ticker, quote):
         _get(quote,  'symbol') or
         "unknown"
     )
+    name = _extract_stock_name(ticker, quote)
 
     # --- 從 quote 取五檔 ---
     bids_raw = _get(quote, 'bids') or _get(quote, 'bidPrices') or []
@@ -135,9 +154,10 @@ def extract_analysis_data(ticker, quote):
     # =============================
     trend = "neutral"
     if last_price and avg_price:
-        if last_price > avg_price:
+        diff_pct = (last_price - avg_price) / avg_price * 100
+        if diff_pct > 0.3:
             trend = "up"
-        elif last_price < avg_price:
+        elif diff_pct < -0.3:
             trend = "down"
 
     # =============================
@@ -145,9 +165,10 @@ def extract_analysis_data(ticker, quote):
     # =============================
     mid_price = (best_bid + best_ask) / 2 if (best_bid and best_ask) else None
     distance_from_mid = round(last_price - mid_price, 2) if (last_price and mid_price) else None
+    distance_from_mid_pct = round((last_price - mid_price) / last_price * 100, 3) if (last_price and mid_price) else None
     vwap_distance = (
         round(((last_price - avg_price) / avg_price) * 100, 2)
-        if (last_price and avg_price) else 0
+        if (last_price and avg_price) else None
     )
 
     # =============================
@@ -167,8 +188,14 @@ def extract_analysis_data(ticker, quote):
     # 假突破
     # =============================
     NEAR_PCT     = 0.005  # 0.5%，相容不同價位股票
-    is_near_high = high_price and last_price and (high_price - last_price) / last_price <= NEAR_PCT
-    is_near_low  = low_price  and last_price and (last_price - low_price)  / last_price <= NEAR_PCT
+    is_near_high = (
+        high_price is not None and last_price is not None and last_price > 0
+        and 0 <= (high_price - last_price) / last_price <= NEAR_PCT
+    )
+    is_near_low = (
+        low_price is not None and last_price is not None and last_price > 0
+        and 0 <= (last_price - low_price) / last_price <= NEAR_PCT
+    )
 
     trap_signal = None
     if is_near_high and dominance == "sell" and change_percent < 0.5:
@@ -180,13 +207,13 @@ def extract_analysis_data(ticker, quote):
     # 反轉偵測
     # =============================
     reversal_signal = None
-    if (trend == "down" and change_percent > 1.2 and
+    if (trend == "down" and change_percent > 0.8 and
             last_price and mid_price and last_price > mid_price and
-            dominance == "buy" and distance_from_mid and distance_from_mid > 1.5):
+            dominance == "buy" and distance_from_mid_pct and distance_from_mid_pct > 0.1):
         reversal_signal = "bullish_reversal"
-    elif (trend == "up" and change_percent < -1.2 and
+    elif (trend == "up" and change_percent < -0.8 and
             last_price and mid_price and last_price < mid_price and
-            dominance == "sell" and distance_from_mid and distance_from_mid < -1.5):
+            dominance == "sell" and distance_from_mid_pct and distance_from_mid_pct < -0.1):
         reversal_signal = "bearish_reversal"
 
     # =============================
@@ -194,7 +221,7 @@ def extract_analysis_data(ticker, quote):
     # =============================
     is_limit_locked  = not bids or not asks
     is_over_7_percent = change_percent >= 7.0
-    is_fomo_extreme   = vwap_distance >= 2.0
+    is_fomo_extreme   = vwap_distance is not None and vwap_distance >= 2.0
 
     # =============================
     # 決策
@@ -259,7 +286,7 @@ def extract_analysis_data(ticker, quote):
 
     def update_trigger(side):
         time_key = f"{side}_time"
-        if entry_memory[symbol][time_key] and (now - entry_memory[symbol][time_key]) <= TIME_WINDOW:
+        if entry_memory[symbol][time_key] is not None and (now - entry_memory[symbol][time_key]) <= TIME_WINDOW:
             entry_memory[symbol][side] += 1
         else:
             entry_memory[symbol][side] = 1
@@ -298,9 +325,9 @@ def extract_analysis_data(ticker, quote):
     # 盤型 / 出場 / 風控
     # =============================
     market_type = "range"
-    if reversal_signal:             market_type = "reversal"
+    if trap_signal:                 market_type = "trap"
+    elif reversal_signal:           market_type = "reversal"
     elif trend in ["up","down"] and abs(change_percent) > 1: market_type = "trend"
-    elif trap_signal:               market_type = "trap"
 
     # grade 區分方向：A_long/A_short 避免 GPT 誤把強空訊號解讀為強多
     if score >= 75:    signal_grade = "A_long"
@@ -311,7 +338,7 @@ def extract_analysis_data(ticker, quote):
 
     entry_zone = {"lower": None, "upper": None}
     if mid_price and last_price:
-        if decision in ["long_possible", "avoid_short", "short_possible", "avoid_long"]:
+        if decision in ["long_possible", "short_possible"]:
             entry_zone = {
                 "lower": round(mid_price - 1, 2),
                 "upper": round(mid_price + 1, 2)
@@ -335,6 +362,7 @@ def extract_analysis_data(ticker, quote):
 
     return {
         "symbol":   symbol,
+        "name":     name,
         "decision": decision,
         "score":    score,
 
@@ -407,6 +435,8 @@ def send_ai_telegram_report(analysis_result, gemini_key=None, tg_token=None, tg_
     try:
         genai.configure(api_key=gemini_key)
         model_list   = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        if not model_list:
+            raise RuntimeError("Gemini 無可用模型")
         correct_name = next((m for m in model_list if 'flash' in m), model_list[0])
         ai_model     = genai.GenerativeModel(correct_name)
 

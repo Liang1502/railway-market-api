@@ -12,8 +12,15 @@ watch.py — 當沖部位追蹤 + 即時策略提示
   python watch.py update 2330 t1 562
   python watch.py update 2330 t2 567
 
-移除部位:
+出場並記錄損益:
+  python watch.py close 2330 556         出場價 556，計算損益並寫入 trades.json
+
+移除部位（不記錄）:
   python watch.py remove 2330
+
+查看交易記錄:
+  python watch.py history                最近 10 筆
+  python watch.py history 20             最近 20 筆
 
 查看清單:
   python watch.py list
@@ -34,6 +41,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 POSITIONS_FILE   = os.path.join(os.path.dirname(__file__), "positions.json")
+TRADES_FILE      = os.path.join(os.path.dirname(__file__), "trades.json")
 DEFAULT_INTERVAL = 6
 
 _BASE      = os.getenv("RAILWAY_API_URL", "https://web-production-641b.up.railway.app")
@@ -43,6 +51,27 @@ TG_CHAT_ID = os.getenv("TG_CHAT_ID",    "")
 STOP_PCT = 0.02
 T1_PCT   = 0.02
 T2_PCT   = 0.03
+
+def _atr_pcts(sym: str) -> tuple:
+    """查 API 取昨日 (high-low)/close 波幅，計算自適應 stop/T1/T2 比例。
+    若無資料則回傳預設值。
+    """
+    try:
+        r = requests.get(f"{_BASE}/analysis-input/{sym}", timeout=8)
+        if r.status_code == 200:
+            d = r.json()
+            y_high  = safe_float(d.get("y_high"))
+            y_low   = safe_float(d.get("y_low"))
+            y_close = safe_float(d.get("y_close"))
+            if y_high and y_low and y_close and y_close > 0:
+                atr = (y_high - y_low) / y_close
+                stop = max(0.015, min(0.03,  atr * 0.8))
+                t1   = max(0.02,  min(0.05,  atr * 1.0))
+                t2   = max(0.03,  min(0.07,  atr * 1.5))
+                return stop, t1, t2
+    except Exception:
+        pass
+    return STOP_PCT, T1_PCT, T2_PCT
 
 DATA_STALE_WARN  = 60   # 超過幾秒顯示黃色警告
 DATA_STALE_ERROR = 120  # 超過幾秒顯示紅色警告
@@ -81,6 +110,34 @@ def load_positions() -> dict:
 def save_positions(data: dict):
     with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_trades() -> list:
+    try:
+        with open(TRADES_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        print(f"[WARN] 讀取 trades.json 失敗: {e}")
+        return []
+
+def save_trades(trades: list):
+    with open(TRADES_FILE, "w", encoding="utf-8") as f:
+        json.dump(trades, f, ensure_ascii=False, indent=2)
+
+def _validate_positions(positions: dict) -> dict:
+    """Drop positions whose required numeric fields are missing or zero."""
+    valid = {}
+    for sym, pos in positions.items():
+        if not isinstance(pos, dict):
+            print(f"[WARN] {sym} 部位資料格式錯誤（非 dict），已跳過: {pos}")
+            continue
+        required = ("entry", "stop", "t1", "t2")
+        if all(pos.get(f) not in (None, 0, "") for f in required):
+            valid[sym] = pos
+        else:
+            print(f"[WARN] {sym} 部位資料損毀，已跳過: {pos}")
+    return valid
 
 # ─── helpers ─────────────────────────────────────────────
 def safe_float(x):
@@ -124,6 +181,8 @@ def send_telegram(msg: str):
 def check_alerts(positions: dict, results: dict):
     for sym, pos in positions.items():
         ind   = results.get(sym) or {}
+        if ind.get("_stale"):
+            continue
         price = safe_float(
             ind.get("score_price") or ind.get("current_price") or ind.get("last")
         )
@@ -134,7 +193,8 @@ def check_alerts(positions: dict, results: dict):
         if urgency not in ("stop", "profit"):
             continue
 
-        alert_key = f"{sym}_{urgency}_{pos['stop']}"
+        threshold = pos["stop"] if urgency == "stop" else pos["t2"]
+        alert_key = f"{sym}_{urgency}_{threshold}"
         if alert_key in _alerted:
             continue
         _alerted.add(alert_key)
@@ -193,20 +253,27 @@ def compute_strategy(pos: dict, price: float, ind: dict) -> tuple:
     urgency: "stop" | "profit" | "add" | "warn" | "ok" | "watch"
     """
     direction = pos["direction"]
-    entry     = pos["entry"]
-    stop      = pos["stop"]
-    t1        = pos["t1"]
-    t2        = pos["t2"]
+    entry     = safe_float(pos.get("entry"))
+    stop      = safe_float(pos.get("stop"))
+    t1        = safe_float(pos.get("t1"))
+    t2        = safe_float(pos.get("t2"))
 
-    k    = safe_float(ind.get("k_1min"))
-    d    = safe_float(ind.get("d_1min"))
-    vwap = safe_float(ind.get("vwap_1min"))
-    v6   = safe_float(ind.get("v6_score"))
+    if not entry or stop is None or t1 is None or t2 is None:
+        return "⚠️ 部位價位資料異常，請確認 entry/stop/t1/t2", "stop"
 
-    kd_gold    = k is not None and d is not None and k > d
-    kd_death   = k is not None and d is not None and k < d
-    above_vwap = vwap is not None and price > vwap
-    below_vwap = vwap is not None and price < vwap
+    k         = safe_float(ind.get("k_1min"))
+    d         = safe_float(ind.get("d_1min"))
+    vwap      = safe_float(ind.get("vwap_1min"))
+    v6        = safe_float(ind.get("v6_score"))
+    kd_signal = ind.get("kd_signal", "none")
+
+    # 區分「剛形成交叉」（強訊號）與「維持方向」（弱訊號）
+    kd_gold_fresh  = kd_signal == "gold_cross"
+    kd_death_fresh = kd_signal == "death_cross"
+    kd_gold        = kd_gold_fresh  or (k is not None and d is not None and k > d)
+    kd_death       = kd_death_fresh or (k is not None and d is not None and k < d)
+    above_vwap     = vwap is not None and price > vwap
+    below_vwap     = vwap is not None and price < vwap
 
     if direction == "long":
         gain_pct = (price - entry) / entry * 100
@@ -219,13 +286,13 @@ def compute_strategy(pos: dict, price: float, ind: dict) -> tuple:
             if kd_death:
                 return "🟠 達 T1 且 KD 轉弱，建議減碼或移停損至成本", "warn"
             return f"🟡 達停利 T1，建議移停損至成本 {entry:.2f}", "warn"
-        # 加碼條件：有獲利 + 三項指標齊備
-        if gain_pct > 0.5 and kd_gold and above_vwap and v6 is not None and v6 >= 70:
-            return "🔵 動能齊備（V6 KD VWAP 全多），可考慮加碼", "add"
-        if gain_pct < -1.5 and kd_death:
-            return "🟠 虧損加速 + KD 死叉，注意是否觸及停損！", "warn"
-        if kd_death and below_vwap:
-            return "🟠 KD 死叉 + 跌破 VWAP，考慮提前減碼", "warn"
+        # 加碼條件：需要 KD 剛形成金叉（非靜態偏多）+ VWAP 站上 + V6 強
+        if gain_pct > 0.5 and kd_gold_fresh and above_vwap and v6 is not None and v6 >= 70:
+            return "🔵 動能齊備（V6 KD金叉 VWAP 全多），可考慮加碼", "add"
+        if gain_pct < -1.5 and kd_death_fresh:
+            return "🟠 虧損加速 + KD 剛死叉，注意是否觸及停損！", "warn"
+        if kd_death_fresh and below_vwap and gain_pct < 0.5:
+            return "🟠 KD 剛死叉 + 跌破 VWAP，考慮提前減碼", "warn"
         if kd_gold and above_vwap and v6 is not None and v6 >= 60:
             return "🟢 多方強勢，可續抱", "ok"
         return "⚪ 持倉觀察", "watch"
@@ -241,13 +308,13 @@ def compute_strategy(pos: dict, price: float, ind: dict) -> tuple:
             if kd_gold:
                 return "🟠 達 T1 且 KD 轉強，建議減碼或移停損至成本", "warn"
             return f"🟡 達停利 T1，建議移停損至成本 {entry:.2f}", "warn"
-        # 加碼條件：有獲利 + 三項指標齊備
-        if gain_pct > 0.5 and kd_death and below_vwap and v6 is not None and v6 <= -20:
-            return "🔵 空方動能齊備（V6 KD VWAP 全空），可考慮加碼", "add"
-        if gain_pct < -1.5 and kd_gold:
-            return "🟠 虧損加速 + KD 金叉，注意是否觸及停損！", "warn"
-        if kd_gold and above_vwap:
-            return "🟠 KD 金叉 + 站上 VWAP，考慮提前減碼", "warn"
+        # 加碼條件：需要 KD 剛形成死叉（非靜態偏空）+ VWAP 跌破 + V6 強空
+        if gain_pct > 0.5 and kd_death_fresh and below_vwap and v6 is not None and v6 <= -20:
+            return "🔵 空方動能齊備（V6 KD死叉 VWAP 全空），可考慮加碼", "add"
+        if gain_pct < -1.5 and kd_gold_fresh:
+            return "🟠 虧損加速 + KD 剛金叉，注意是否觸及停損！", "warn"
+        if kd_gold_fresh and above_vwap:
+            return "🟠 KD 剛金叉 + 站上 VWAP，考慮提前減碼", "warn"
         if kd_death and below_vwap and v6 is not None and v6 <= -10:
             return "🟢 空方強勢，可續抱", "ok"
         return "⚪ 持倉觀察", "watch"
@@ -263,20 +330,27 @@ def colorize_advice(advice: str, urgency: str) -> str:
 # ─── 渲染單一部位 ──────────────────────────────────────────
 def render_position(sym: str, pos: dict, ind: dict) -> list:
     direction = pos["direction"]
-    entry     = pos["entry"]
-    stop      = pos["stop"]
-    t1        = pos["t1"]
-    t2        = pos["t2"]
+    entry     = safe_float(pos.get("entry"))
+    stop      = safe_float(pos.get("stop"))
+    t1        = safe_float(pos.get("t1"))
+    t2        = safe_float(pos.get("t2"))
     dir_label = green("多 ↑") if direction == "long" else red("空 ↓")
+
+    if not entry:
+        return [red(f"  {bold(sym):<6} ⚠️ 進場價異常，請用 update 修正"), ""]
 
     price = safe_float(
         ind.get("score_price") or ind.get("current_price") or ind.get("last")
     )
 
-    # 資料尚未就緒
-    if ind.get("status") == "pending" or price is None:
+    # 資料尚未就緒或伺服器只回了過期快取
+    if ind.get("status") == "pending" or ind.get("_stale") or price is None:
+        stale_note = ""
+        if ind.get("_stale"):
+            age = safe_float(ind.get("_age_secs"))
+            stale_note = yellow(f"⚠️ 快取過期 {int(age)}s，等待 uploader 重抓...") if age else yellow("⚠️ 快取過期，等待 uploader 重抓...")
         return [
-            f"  {bold(sym):<6} {dir_label}  進場: {entry:.2f}  {yellow('⏳ 等待 uploader 回應...')}",
+            f"  {bold(sym):<6} {dir_label}  進場: {entry:.2f}  {stale_note or yellow('⏳ 等待 uploader 回應...')}",
             "",
         ]
 
@@ -383,14 +457,16 @@ def cmd_add(args):
     direction = parse_direction(args[1])
     entry     = float(args[2])
 
+    stop_pct, t1_pct, t2_pct = _atr_pcts(sym)
+
     if direction == "long":
-        default_stop = round(entry * (1 - STOP_PCT), 2)
-        t1           = round(entry * (1 + T1_PCT), 2)
-        t2           = round(entry * (1 + T2_PCT), 2)
+        default_stop = round(entry * (1 - stop_pct), 2)
+        t1           = round(entry * (1 + t1_pct), 2)
+        t2           = round(entry * (1 + t2_pct), 2)
     else:
-        default_stop = round(entry * (1 + STOP_PCT), 2)
-        t1           = round(entry * (1 - T1_PCT), 2)
-        t2           = round(entry * (1 - T2_PCT), 2)
+        default_stop = round(entry * (1 + stop_pct), 2)
+        t1           = round(entry * (1 - t1_pct), 2)
+        t2           = round(entry * (1 - t2_pct), 2)
 
     stop = float(args[3]) if len(args) >= 4 else default_stop
 
@@ -406,7 +482,8 @@ def cmd_add(args):
     save_positions(positions)
 
     dir_label = "多↑" if direction == "long" else "空↓"
-    print(f"✅ 已新增  {sym} {dir_label}  進場:{entry}  停損:{stop}  T1:{t1}  T2:{t2}")
+    atr_hint = "" if stop_pct == STOP_PCT else f"  (ATR自適應: 停損{stop_pct*100:.1f}% T1{t1_pct*100:.1f}% T2{t2_pct*100:.1f}%)"
+    print(f"✅ 已新增  {sym} {dir_label}  進場:{entry}  停損:{stop}  T1:{t1}  T2:{t2}{atr_hint}")
 
 def cmd_update(args):
     if len(args) < 3:
@@ -447,6 +524,81 @@ def cmd_remove(args):
     save_positions(positions)
     print(f"🗑️  已移除: {' '.join(removed)}" if removed else "（代號不在清單中）")
 
+def cmd_close(args):
+    if len(args) < 2:
+        print("用法: python watch.py close <代號> <出場價>")
+        return
+    sym = args[0].strip()
+    try:
+        exit_price = float(args[1])
+    except ValueError:
+        print("出場價必須是數字")
+        return
+
+    positions = load_positions()
+    if sym not in positions:
+        print(f"{sym} 不在部位清單中")
+        return
+
+    pos       = positions[sym]
+    entry     = safe_float(pos.get("entry"))
+    direction = pos.get("direction")
+
+    if direction == "long":
+        pnl_pct = (exit_price - entry) / entry * 100
+        pnl_pts = exit_price - entry
+    else:
+        pnl_pct = (entry - exit_price) / entry * 100
+        pnl_pts = entry - exit_price
+
+    trade = {
+        "symbol":     sym,
+        "direction":  direction,
+        "entry":      entry,
+        "exit":       exit_price,
+        "pnl_pts":    round(pnl_pts, 2),
+        "pnl_pct":    round(pnl_pct, 2),
+        "entry_time": pos.get("added_at", ""),
+        "exit_time":  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    trades = load_trades()
+    trades.append(trade)
+    save_trades(trades)
+
+    positions.pop(sym)
+    save_positions(positions)
+
+    mark      = "✅" if pnl_pct >= 0 else "❌"
+    dir_label = "多↑" if direction == "long" else "空↓"
+    print(f"{mark} {sym} {dir_label}  進:{entry}  出:{exit_price}  "
+          f"損益:{pnl_pts:+.2f}點 ({pnl_pct:+.2f}%)")
+    print("📝 已記錄至 trades.json")
+
+def cmd_history(args):
+    trades = load_trades()
+    if not trades:
+        print("尚無交易記錄。")
+        return
+
+    n = 10
+    if args and args[0].isdigit():
+        n = int(args[0])
+    recent = trades[-n:]
+
+    wins      = sum(1 for t in recent if t["pnl_pct"] >= 0)
+    total_pnl = sum(t["pnl_pct"] for t in recent)
+    win_rate  = wins / len(recent) * 100
+
+    print(f"📊 最近 {len(recent)} 筆交易  勝率:{win_rate:.0f}%  累積損益:{total_pnl:+.2f}%")
+    print("─" * 70)
+    for t in recent:
+        mark      = "✅" if t["pnl_pct"] >= 0 else "❌"
+        dir_label = "多↑" if t["direction"] == "long" else "空↓"
+        print(f"  {mark} {t['symbol']:<6} {dir_label}  "
+              f"進:{t['entry']}  出:{t['exit']}  "
+              f"{t['pnl_pts']:+.2f}點 ({t['pnl_pct']:+.2f}%)  "
+              f"{t['exit_time']}")
+
 def cmd_list():
     positions = load_positions()
     if not positions:
@@ -470,7 +622,7 @@ def cmd_monitor(interval: int):
     print(f"🚀 監看 {len(symbols)} 部位: {' '.join(symbols)}  (每 {interval}s，Ctrl+C 停止)")
     try:
         while True:
-            positions = load_positions()
+            positions = _validate_positions(load_positions())
             symbols   = list(positions.keys())
             results   = fetch_all(symbols) if symbols else {}
             check_alerts(positions, results)
@@ -488,6 +640,9 @@ def main():
         return
 
     subcmd = args[0]
+    if subcmd in ("help", "--help", "-h"):
+        print(__doc__.strip())
+        return
     if subcmd == "add":
         cmd_add(args[1:])
         return
@@ -496,6 +651,12 @@ def main():
         return
     if subcmd == "remove":
         cmd_remove(args[1:])
+        return
+    if subcmd == "close":
+        cmd_close(args[1:])
+        return
+    if subcmd in ("history", "hist"):
+        cmd_history(args[1:])
         return
     if subcmd in ("list", "ls"):
         cmd_list()

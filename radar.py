@@ -37,24 +37,27 @@ def main():
 
     print("🚀 啟動盤中監控儀表板（Ctrl+C 停止）")
 
+    error_streak = 0
     while True:
         try:
             res = requests.get(API_URL, timeout=5)
             if res.status_code == 200:
+                error_streak = 0
                 data = res.json()
 
-                # ⭐ 只抓 TOP 1 來比對（避免分數跳動一點點就一直洗頻）
                 current_top = str(data.get("top_short", [])[:1]) + str(data.get("top_long", [])[:1])
-
-                # ⭐ 只有第一名的名單有變動才印出最新戰況
                 if current_top != last_top:
                     print_candidates(data)
                     last_top = current_top
-                else:
-                    pass # 隱藏「無明顯變化」，讓終端機畫面保持乾淨
+            else:
+                error_streak += 1
+                if error_streak >= 3:
+                    print(f"[WARN] radar: API 連續 {error_streak} 次異常回應 {res.status_code}")
 
         except Exception as e:
-            pass # 隱藏連線錯誤，避免洗頻
+            error_streak += 1
+            if error_streak >= 3:
+                print(f"[WARN] radar: 連線失敗 {error_streak} 次 — {e}")
 
         time.sleep(INTERVAL)
 

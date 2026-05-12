@@ -35,6 +35,7 @@ TW_TZ = timezone(timedelta(hours=8))
 # 節流控制
 REST_CALL_COOLDOWN_PER_SYMBOL = 30
 GLOBAL_REST_MIN_INTERVAL      = 1.5
+PRICE_ONLY_COOLDOWN_PER_SYMBOL = 3
 WISHLIST_UPLOAD_COOLDOWN      = 60
 HEARTBEAT_INTERVAL            = 120
 YDAY_REFRESH_COOLDOWN         = 60
@@ -94,6 +95,13 @@ def now_tw():
 def today_tw_str():
     return now_tw().strftime("%Y-%m-%d")
 
+def is_market_hours():
+    now = now_tw()
+    if now.weekday() >= 5:
+        return False
+    t = now.hour * 100 + now.minute
+    return 900 <= t <= 1335
+
 def safe_float(x):
     try:
         if x is None or x == "":
@@ -101,6 +109,41 @@ def safe_float(x):
         return float(x)
     except (ValueError, TypeError):
         return None
+
+def set_payload_price(data, price, source=None):
+    price = safe_float(price)
+    if price is None or price <= 0:
+        return False
+
+    data["current_price"] = price
+    data["last"] = price
+    data["_runtime_price"] = price
+    data["score_price"] = price
+    if source:
+        data["_price_source"] = source
+        data["_price_ts"] = now_tw().isoformat()
+
+    if isinstance(data.get("price"), dict):
+        data["price"]["last"] = price
+    else:
+        data["price"] = {"last": price}
+    return True
+
+def sync_vwap_risk(data, price, vwap):
+    price = safe_float(price)
+    vwap = safe_float(vwap)
+    if not price or not vwap:
+        return
+
+    distance = round(((price - vwap) / vwap) * 100, 2)
+    risk = data.setdefault("risk_control", {})
+    risk["vwap_distance"] = distance
+
+    if distance >= 2.0 and (data.get("structure") or {}).get("dominance") == "buy":
+        data["decision"] = "avoid_long"
+        entry = data.setdefault("entry_signal", {})
+        entry["long_trigger"] = False
+        entry["long_reason"] = f"⚠️ 乖離 VWAP 達 {distance}%，FOMO 禁令生效"
 
 def parse_date_like(val):
     if val is None:
@@ -147,6 +190,7 @@ ws_stock   = sdk.marketdata.websocket_client.stock
 
 last_sent          = {}
 last_rest_call     = {}
+last_price_push    = {}
 last_global_call   = 0
 subscribed_symbols = set()
 lock               = threading.Lock()
@@ -161,6 +205,7 @@ score_history      = {}   # {symbol: deque([score, ...])}
 positions          = {}   # {symbol: {"entry": price, "stop": price}}
 entry_plan         = {}   # {symbol: {"base": price, "step": 0}}  分批進場計畫
 trade_log          = []   # [{"symbol": ..., "pnl": ...}]
+_prev_kd           = {}   # {symbol: (prev_k, prev_d)}，用於偵測真實交叉事件
 
 # ===============================
 # 診斷
@@ -282,19 +327,21 @@ def fetch_candles(symbol, count=100):
 # ===============================
 # 即時成交價
 # ===============================
-def get_current_price(ticker):
-    # 優先抓真實成交欄位
+def get_current_price(*sources):
+    # 優先抓真實成交欄位；ticker 有時會給到收盤/參考價，所以 quote 也要一起看。
     for key in ["last", "last_price", "lastPrice", "trade_price", "tradePrice",
                 "current_price", "currentPrice", "price", "match_price", "matchPrice"]:
-        val = safe_float(v(ticker, key))
-        if val and val > 0:
-            return val
+        for source in sources:
+            val = safe_float(v(source, key))
+            if val and val > 0:
+                return val
     # close 僅在盤中當備援，盤後不用（盤後 close 可能是昨日值）
     if is_market_hours():
         for key in ["close"]:
-            val = safe_float(v(ticker, key))
-            if val and val > 0:
-                return val
+            for source in sources:
+                val = safe_float(v(source, key))
+                if val and val > 0:
+                    return val
     return None
 
 def get_today_close(symbol):
@@ -389,7 +436,7 @@ def get_vwap_1min(symbol, current_price=None, candles=None):
                 "volume":   0,
             })
 
-    total_pv = sum(c["close"] * c["volume"] for c in candles)
+    total_pv = sum((c["high"] + c["low"] + c["close"]) / 3 * c["volume"] for c in candles)
     total_v  = sum(c["volume"] for c in candles)
 
     if total_v <= 0:
@@ -551,14 +598,21 @@ def compute_v6_score(symbol, data):
     base_score = 0
     tags = []
 
-    # KD
+    # KD：區分「剛形成交叉」（動態事件）與「維持方向」（靜態狀態）
+    kd_signal = data.get("kd_signal", "none")
     if k_v is not None and d_v is not None:
-        if k_v > d_v:
-            base_score += WEIGHTS["kd_gold_cross"]
+        if kd_signal == "gold_cross":
+            base_score += WEIGHTS["kd_gold_cross"]      # +15 剛形成金叉
             tags.append("KD金叉")
-        else:
-            base_score += WEIGHTS["kd_death_cross"]
+        elif kd_signal == "death_cross":
+            base_score += WEIGHTS["kd_death_cross"]     # -15 剛形成死叉
             tags.append("KD死叉")
+        elif k_v > d_v:
+            base_score += WEIGHTS["kd_gold_cross"] // 3  # +5 維持多方
+            tags.append("KD偏多")
+        else:
+            base_score += WEIGHTS["kd_death_cross"] // 3  # -5 維持空方
+            tags.append("KD偏空")
 
     # VWAP
     if price and vwap:
@@ -631,6 +685,13 @@ def compute_v6_score(symbol, data):
         tags.append("動能走強")
     elif mom < -5:
         tags.append("動能轉弱")
+
+    # 系統否決：亮燈鎖死或無成交量時 V6 強制壓至負值，避免其他指標救回
+    long_reason = str((data.get("entry_signal") or {}).get("long_reason") or "")
+    if "no_trade" in str(data.get("decision", "")) or "亮燈" in long_reason or "7%" in long_reason:
+        score = min(score, -10)
+        if "系統禁令" not in tags:
+            tags.append("系統禁令")
 
     return round(score, 2), tags
 
@@ -759,7 +820,7 @@ def try_exit(symbol, price, v6_score):
 # ===============================
 # 建立分析資料
 # ===============================
-def build_payload(symbol):
+def build_payload(symbol, current_price_hint=None):
     global _rate_limited_until
 
     wait = _rate_limited_until - time.time()
@@ -775,7 +836,9 @@ def build_payload(symbol):
             raise ValueError(f"{symbol} Fugle 429，退避 60s: {e}")
         raise
 
-    curr_p = get_current_price(ticker)
+    curr_p = safe_float(current_price_hint)
+    if not curr_p or curr_p <= 0:
+        curr_p = get_current_price(ticker, quote)
 
     # 共用 candles（一次抓取，供 KD / VWAP / 量能 / 價格補正共用）
     try:
@@ -831,11 +894,9 @@ def build_payload(symbol):
     data = extract_analysis_data(ticker, quote)
     data["symbol"] = symbol
 
-    # 只補空值，不覆蓋 extract_analysis_data 已算好的欄位
+    # 對外現價一律使用已驗證 curr_p，避免 extract_analysis_data 裡的 close/舊欄位蓋過即時價。
     if curr_p is not None:
-        data.setdefault("current_price", curr_p)
-        data.setdefault("price", curr_p)
-        data.setdefault("last", curr_p)
+        set_payload_price(data, curr_p)
 
     # 評分系統用獨立欄位，不污染原始分析
     data["_runtime_price"] = curr_p
@@ -845,7 +906,14 @@ def build_payload(symbol):
 
     kd_sig = "none"
     if k_v is not None and d_v is not None:
-        kd_sig = "gold_cross" if k_v > d_v else "death_cross"
+        prev = _prev_kd.get(symbol)
+        if prev is not None:
+            pk, pd = prev
+            if pk < pd and k_v >= d_v:
+                kd_sig = "gold_cross"
+            elif pk > pd and k_v <= d_v:
+                kd_sig = "death_cross"
+        _prev_kd[symbol] = (k_v, d_v)
 
     data.update({
         "k_1min":        k_v,
@@ -855,6 +923,7 @@ def build_payload(symbol):
         "volume_ratio":  vol_info.get("volume_ratio"),
         "volume_expand": vol_info.get("volume_expand"),
     })
+    sync_vwap_risk(data, curr_p, vwap_1m)
 
     # score_price 必須在 compute_v6_score 之前設定，否則函數內取到 None
     data["score_price"] = curr_p
@@ -898,6 +967,36 @@ def send_to_cloud(data):
             print(f"❌ [雲端] {response.status_code} - {response.text[:150]}")
     except Exception as e:
         print(f"❌ [雲端] 連線失敗: {e}")
+
+def send_price_only_update(symbol, price):
+    now_ts = time.time()
+    if now_ts - last_price_push.get(symbol, 0) < PRICE_ONLY_COOLDOWN_PER_SYMBOL:
+        return
+
+    with lock:
+        base = score_board.get(symbol)
+        if not base:
+            return
+
+        data = dict(base)
+        if isinstance(base.get("price"), dict):
+            data["price"] = dict(base["price"])
+
+        old_price = safe_float(data.get("score_price") or data.get("current_price") or data.get("last"))
+        new_price = safe_float(price)
+        if old_price == new_price:
+            return
+        if not set_payload_price(data, new_price, source="websocket_trade"):
+            return
+
+        # 價格快速更新不重算 KD，重置為 none 避免 GPT 誤讀過期交叉事件
+        data["kd_signal"] = "none"
+
+        score_board[symbol] = data
+
+    send_to_cloud(data)
+    last_price_push[symbol] = now_ts
+    print(f"⚡ [價格更新] {symbol} {old_price} → {new_price}")
 
 # ===============================
 # 排行榜輸出
@@ -983,15 +1082,18 @@ def handle_message(message):
             return
 
         now_ts = time.time()
+        trade_price = get_current_price(item)
         if now_ts - last_rest_call.get(code, 0) < REST_CALL_COOLDOWN_PER_SYMBOL:
+            send_price_only_update(code, trade_price)
             return
         if now_ts - last_global_call < GLOBAL_REST_MIN_INTERVAL:
+            send_price_only_update(code, trade_price)
             return
 
         last_global_call     = now_ts
         last_rest_call[code] = now_ts
 
-        data = build_payload(code)
+        data = build_payload(code, current_price_hint=trade_price)
 
         with lock:
             score_board[code] = data
@@ -1114,15 +1216,8 @@ threading.Thread(target=print_score_board, daemon=True).start()
 print("🚀 V6.3 穩健合併版啟動成功！正在監聽市場...")
 
 # ===============================
-# 盤中時段判斷
+# 盤中時段判斷（函數定義在檔案頂部）
 # ===============================
-def is_market_hours():
-    now = now_tw()
-    # 週一到週五 09:00 - 13:35（多留5分鐘緩衝）
-    if now.weekday() >= 5:
-        return False
-    t = now.hour * 100 + now.minute
-    return 900 <= t <= 1335
 
 # ===============================
 # 心跳迴圈（含連續失敗保護）

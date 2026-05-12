@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Header
 from typing import Dict, Set
 from datetime import datetime
 import asyncio
+import json
 import os
 
 try:
@@ -12,13 +13,50 @@ except ImportError:
 
 app = FastAPI()
 
+WATCH_SET_FILE = "watch_set.json"
+
 market_data: Dict[str, dict] = {}
 wishlist:    Set[str] = set()
-watch_set:   Set[str] = set()   # watch.py 請求的標的，永久追蹤不清除
+
+
+def _load_watch_set() -> Set[str]:
+    try:
+        with open(WATCH_SET_FILE) as f:
+            return set(json.load(f).get("symbols", []))
+    except Exception:
+        return set()
+
+
+def _save_watch_set() -> None:
+    try:
+        with open(WATCH_SET_FILE, "w") as f:
+            json.dump({"symbols": list(watch_set)}, f)
+    except Exception:
+        pass
+
+
+watch_set: Set[str] = _load_watch_set()   # watch.py 請求的標的，永久追蹤不清除
 
 MY_SECRET_TOKEN = os.getenv("API_SECRET_TOKEN", "ChiaChun_Super_Secret_888")
 
 STALE_SECS = 90   # 超過此秒數視為過期，重新觸發 wishlist
+
+def _num(data: dict, key: str, default: float) -> float:
+    try:
+        val = data.get(key)
+        return default if val is None else float(val)
+    except (TypeError, ValueError):
+        return default
+
+def cache_age_secs(data: dict) -> float:
+    ts_str = data.get("_server_ts", "")
+    try:
+        return (datetime.utcnow() - datetime.fromisoformat(ts_str)).total_seconds()
+    except Exception:
+        return 9999
+
+def is_stale(data: dict) -> bool:
+    return cache_age_secs(data) > STALE_SECS
 
 # =============================
 # 📥 接收資料（uploader.py 打這裡）
@@ -40,8 +78,23 @@ def update_data(data: dict, authorization: str = Header(None)):
 # =============================
 @app.get("/analysis-input/{symbol}")
 async def get_analysis(symbol: str):
-    if symbol in market_data:
-        return market_data[symbol]
+    cached = market_data.get(symbol)
+    if cached and not is_stale(cached):
+        return cached
+
+    if cached:
+        old_ts = cached.get("_server_ts", "")
+        wishlist.add(symbol)
+        for _ in range(10):
+            await asyncio.sleep(1)
+            fresh = market_data.get(symbol)
+            if fresh and fresh.get("_server_ts", "") != old_ts and not is_stale(fresh):
+                wishlist.discard(symbol)
+                return fresh
+        stale_data = dict(cached)
+        stale_data["_stale"] = True
+        stale_data["_age_secs"] = int(cache_age_secs(cached))
+        return stale_data
 
     wishlist.add(symbol)
 
@@ -67,22 +120,23 @@ async def get_analysis_batch(symbols: str):
         raise HTTPException(status_code=400, detail="symbols 不可為空")
 
     # 所有請求的標的自動加入持久追蹤清單
-    for sym in symbol_list:
+    new_syms = [s for s in symbol_list if s not in watch_set]
+    for sym in new_syms:
         watch_set.add(sym)
+    if new_syms:
+        _save_watch_set()
 
     result = {}
     pending = []
+    stale_pending = {}
     for sym in symbol_list:
         if sym in market_data:
-            # 資料過期則重新觸發 uploader，但仍先回傳舊值
-            ts_str = market_data[sym].get("_server_ts", "")
-            try:
-                age = (datetime.utcnow() - datetime.fromisoformat(ts_str)).total_seconds()
-            except Exception:
-                age = 9999
-            if age > STALE_SECS:
+            if is_stale(market_data[sym]):
                 wishlist.add(sym)
-            result[sym] = market_data[sym]
+                pending.append(sym)
+                stale_pending[sym] = market_data[sym].get("_server_ts", "")
+            else:
+                result[sym] = market_data[sym]
         else:
             wishlist.add(sym)
             pending.append(sym)
@@ -93,19 +147,27 @@ async def get_analysis_batch(symbols: str):
         await asyncio.sleep(1)
         still = []
         for sym in pending:
-            if sym in market_data:
-                result[sym] = market_data[sym]
+            data = market_data.get(sym)
+            old_ts = stale_pending.get(sym)
+            if data and (old_ts is None or data.get("_server_ts", "") != old_ts):
+                result[sym] = data
                 wishlist.discard(sym)
             else:
                 still.append(sym)
         pending = still
 
     for sym in pending:
-        result[sym] = {
-            "symbol": sym,
-            "status": "pending",
-            "message": "uploader 尚未回應"
-        }
+        if sym in market_data:
+            data = dict(market_data[sym])
+            data["_stale"] = True
+            data["_age_secs"] = int(cache_age_secs(market_data[sym]))
+            result[sym] = data
+        else:
+            result[sym] = {
+                "symbol": sym,
+                "status": "pending",
+                "message": "uploader 尚未回應"
+            }
     return result
 
 # =============================
@@ -126,7 +188,9 @@ def get_watch_list():
 def remove_from_watch_list(symbol: str, authorization: str = Header(None)):
     if authorization != f"Bearer {MY_SECRET_TOKEN}":
         raise HTTPException(status_code=401, detail="Unauthorized")
-    watch_set.discard(symbol)
+    if symbol in watch_set:
+        watch_set.discard(symbol)
+        _save_watch_set()
     return {"status": "ok", "remaining": list(watch_set)}
 
 # =============================
@@ -138,6 +202,8 @@ def scan_market():
     long_list  = []
 
     for data in market_data.values():
+        if is_stale(data):
+            continue
         if not data.get("decision"):
             continue
 
@@ -151,8 +217,8 @@ def scan_market():
         if decision == "long_possible" or long_trigger:
             long_list.append(data)
 
-    short_list.sort(key=lambda x: x.get("score", 50))
-    long_list.sort( key=lambda x: x.get("score", 50), reverse=True)
+    short_list.sort(key=lambda x: (_num(x, "v6_score", 9999), _num(x, "score", 50)))
+    long_list.sort(key=lambda x: (_num(x, "v6_score", -9999), _num(x, "score", 50)), reverse=True)
 
     return {
         "short_count": len(short_list),
@@ -171,3 +237,10 @@ def health():
         "symbols_cached":  len(market_data),
         "watch_set_count": len(watch_set),
     }
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
