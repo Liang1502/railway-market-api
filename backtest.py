@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import os
 import subprocess
 import sys
 from collections import Counter
@@ -18,7 +19,9 @@ from pathlib import Path
 import pandas as pd
 
 
-STOCK_SCANNER_DIR = Path("/Users/chiachun/Desktop/stock_scanner")
+STOCK_SCANNER_DIR = Path(
+    os.environ.get("STOCK_SCANNER_DIR", "/Users/chiachun/Desktop/stock_scanner")
+)
 
 
 @dataclass(frozen=True)
@@ -246,6 +249,7 @@ def analyze(trades: list[Trade], cfg: BacktestConfig) -> dict:
     wins = returns[returns > 0]
     losses = returns[returns < 0]
     total_pnl = float((returns * cfg.capital_per_trade).sum())
+    equity = cfg.starting_capital + (returns * cfg.capital_per_trade).cumsum()
     profit_factor = float(wins.sum() / abs(losses.sum())) if abs(losses.sum()) > 0 else 99.9
     avg = float(returns.mean())
     std = float(returns.std(ddof=0))
@@ -257,7 +261,7 @@ def analyze(trades: list[Trade], cfg: BacktestConfig) -> dict:
         "profit_factor": profit_factor,
         "total_pnl": total_pnl,
         "annual_return_pct": total_pnl / cfg.starting_capital * 100,
-        "max_drawdown_pct": 0.0,
+        "max_drawdown_pct": compute_max_drawdown(equity) * 100,
         "sharpe_ratio": (avg / std * (252 ** 0.5)) if std else 0.0,
         "daytrade_ratio": sum(t.is_daytrade for t in trades) / len(trades),
         "avg_hold_days": sum(t.hold_days for t in trades) / len(trades),

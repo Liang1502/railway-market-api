@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.chiachun.railway.health_check</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/chiachun/Desktop/railway-market-api/scripts/health_check.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/chiachun/Desktop/railway-market-api</string>
+
+    <!-- 每 5 分鐘跑一次（300 秒） -->
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/chiachun/Desktop/railway-market-api/log/health_check.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/chiachun/Desktop/railway-market-api/log/health_check.stderr.log</string>
+</dict>
+</plist>

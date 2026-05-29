@@ -3,7 +3,7 @@ Tests for watch.py pure strategy functions:
   - safe_float
   - parse_direction
   - compute_strategy  (all branches for long and short positions)
-  - _atr_pcts         (adaptive stop/T1/T2 from yesterday's range)
+  - _atr_pcts         (adaptive stop/T1/T2 from ATR / true range)
   - cmd_close / cmd_history (trade log)
 """
 import json
@@ -12,7 +12,7 @@ from unittest.mock import patch, MagicMock
 from watch import (
     safe_float, parse_direction, compute_strategy, _validate_positions,
     _atr_pcts, cmd_close, cmd_history,
-    STOP_PCT, T1_PCT, T2_PCT,
+    STOP_PCT, T1_PCT, T2_PCT, SHORT_ADD_V6_THRESHOLD,
 )
 
 
@@ -185,15 +185,22 @@ class TestComputeStrategyShort:
     def test_add_signal_short_requires_fresh_death_cross(self):
         # 空單加碼需要 kd_signal="death_cross"
         pos = _short_pos(entry=100.0)
-        ind = _ind(k_1min=20.0, d_1min=50.0, vwap_1min=99.5, v6_score=-25.0,
+        ind = _ind(k_1min=20.0, d_1min=50.0, vwap_1min=99.5, v6_score=SHORT_ADD_V6_THRESHOLD,
                    kd_signal="death_cross")
         _, urgency = compute_strategy(pos, price=99.0, ind=ind)
         assert urgency == "add"
 
+    def test_add_signal_short_rejects_mild_negative_v6(self):
+        pos = _short_pos(entry=100.0)
+        ind = _ind(k_1min=20.0, d_1min=50.0, vwap_1min=99.5, v6_score=-25.0,
+                   kd_signal="death_cross")
+        _, urgency = compute_strategy(pos, price=99.0, ind=ind)
+        assert urgency != "add"
+
     def test_add_signal_short_not_triggered_by_static_kd_death(self):
         # 靜態 K<D 不應觸發空單加碼
         pos = _short_pos(entry=100.0)
-        ind = _ind(k_1min=20.0, d_1min=50.0, vwap_1min=99.5, v6_score=-25.0,
+        ind = _ind(k_1min=20.0, d_1min=50.0, vwap_1min=99.5, v6_score=SHORT_ADD_V6_THRESHOLD,
                    kd_signal="none")
         _, urgency = compute_strategy(pos, price=99.0, ind=ind)
         assert urgency == "ok"
@@ -263,16 +270,21 @@ class TestValidatePositions:
 
 # ── _atr_pcts ─────────────────────────────────────────────────────────────────
 
-def _mock_api(y_high, y_low, y_close):
+def _mock_api(y_high, y_low, y_close, y_prev_close=None, atr_pct=None):
     m = MagicMock()
     m.status_code = 200
-    m.json.return_value = {"y_high": y_high, "y_low": y_low, "y_close": y_close}
+    payload = {"y_high": y_high, "y_low": y_low, "y_close": y_close}
+    if y_prev_close is not None:
+        payload["y_prev_close"] = y_prev_close
+    if atr_pct is not None:
+        payload["atr_pct"] = atr_pct
+    m.json.return_value = payload
     return m
 
 
 class TestAtrPcts:
     def test_high_volatility_hits_caps(self):
-        # ATR = (700-660)/675 = 5.93% → all hit upper caps
+        # Fallback range = (700-660)/675 = 5.93% -> all hit upper caps
         with patch("watch.requests.get", return_value=_mock_api(700, 660, 675)):
             stop, t1, t2 = _atr_pcts("4979")
         assert stop == pytest.approx(0.03)
@@ -280,7 +292,7 @@ class TestAtrPcts:
         assert t2  == pytest.approx(0.07)
 
     def test_low_volatility_hits_minimums(self):
-        # ATR = 1.5/100.5 = 1.49% → all hit lower floors
+        # Fallback range = 1.5/100.5 = 1.49% -> all hit lower floors
         with patch("watch.requests.get", return_value=_mock_api(101.5, 100.0, 100.5)):
             stop, t1, t2 = _atr_pcts("2330")
         assert stop == pytest.approx(0.015)
@@ -288,13 +300,28 @@ class TestAtrPcts:
         assert t2  == pytest.approx(0.03)
 
     def test_medium_volatility_between_caps_and_floors(self):
-        # ATR = 3.0/101.5 = 2.96% → stop=2.36%, T1=2.96%, T2=4.43%
+        # Fallback range = 3.0/101.5 = 2.96% -> stop=2.36%, T1=2.96%, T2=4.43%
         with patch("watch.requests.get", return_value=_mock_api(103.0, 100.0, 101.5)):
             stop, t1, t2 = _atr_pcts("2454")
         assert 0.015 < stop < 0.03   # 非預設值，也未觸頂
         assert 0.02  < t1  < 0.05
         assert 0.03  < t2  < 0.07
         assert stop == pytest.approx((3.0 / 101.5) * 0.8, rel=0.001)
+
+    def test_true_range_uses_previous_close_gap(self):
+        # TR = max(3, abs(103-95), abs(100-95)) = 8, wider than same-day range.
+        with patch("watch.requests.get", return_value=_mock_api(103.0, 100.0, 101.5, y_prev_close=95.0)):
+            stop, t1, t2 = _atr_pcts("2454")
+        assert stop == pytest.approx(0.03)
+        assert t1 == pytest.approx(0.05)
+        assert t2 == pytest.approx(0.07)
+
+    def test_api_atr_pct_takes_priority(self):
+        with patch("watch.requests.get", return_value=_mock_api(101.0, 100.0, 100.5, atr_pct=0.025)):
+            stop, t1, t2 = _atr_pcts("2330")
+        assert stop == pytest.approx(0.02)
+        assert t1 == pytest.approx(0.025)
+        assert t2 == pytest.approx(0.0375)
 
     def test_api_failure_returns_defaults(self):
         with patch("watch.requests.get", side_effect=Exception("timeout")):

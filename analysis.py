@@ -1,9 +1,7 @@
 from fubon_neo.sdk import FubonSDK
+import math
 import os
 import time
-import json
-import requests
-import google.generativeai as genai
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,6 +13,11 @@ CERT_PASSWORD = os.getenv("FUBON_CERT_PASSWORD")
 SYMBOL        = "2330"
 
 entry_memory = {}
+LONG_PRESSURE_THRESHOLD = 0.9
+SHORT_PRESSURE_THRESHOLD = 1.2
+ENTRY_CONFIRM_WINDOW_SECS = int(os.getenv("ENTRY_CONFIRM_WINDOW_SECS", "240"))
+ENTRY_MEMORY_TTL_SECS = int(os.getenv("ENTRY_MEMORY_TTL_SECS", str(ENTRY_CONFIRM_WINDOW_SECS * 3)))
+ENTRY_ZONE_PCT = float(os.getenv("ENTRY_ZONE_PCT", "0.003"))
 
 # =============================================
 # 🛠️ 核心修正：SDK 回傳 object，不是 dict
@@ -69,6 +72,51 @@ def _to_list(val):
     return []
 
 
+def _twse_tick_size(price: float) -> float:
+    if price < 10:
+        return 0.01
+    if price < 50:
+        return 0.05
+    if price < 100:
+        return 0.1
+    if price < 500:
+        return 0.5
+    if price < 1000:
+        return 1.0
+    return 5.0
+
+
+def _round_to_tick(price: float, direction: str) -> float:
+    tick = _twse_tick_size(price)
+    steps = price / tick
+    if direction == "down":
+        rounded = math.floor(steps) * tick
+    elif direction == "up":
+        rounded = math.ceil(steps) * tick
+    else:
+        rounded = round(steps) * tick
+    return round(rounded, 2)
+
+
+def _entry_zone_from_mid(mid_price: float) -> dict:
+    width = max(mid_price * ENTRY_ZONE_PCT, _twse_tick_size(mid_price))
+    return {
+        "lower": _round_to_tick(mid_price - width, "down"),
+        "upper": _round_to_tick(mid_price + width, "up"),
+    }
+
+
+def _prune_entry_memory(now: float) -> None:
+    expired = []
+    for sym, state in entry_memory.items():
+        times = [state.get("short_time"), state.get("long_time")]
+        latest = max((t for t in times if t is not None), default=None)
+        if latest is None or now - latest > ENTRY_MEMORY_TTL_SECS:
+            expired.append(sym)
+    for sym in expired:
+        entry_memory.pop(sym, None)
+
+
 def _extract_stock_name(*sources):
     for key in (
         "name",
@@ -91,6 +139,9 @@ def _extract_stock_name(*sources):
 # =============================================
 
 def extract_analysis_data(ticker, quote):
+    now = time.time()
+    _prune_entry_memory(now)
+
     # --- 取 symbol ---
     symbol = (
         _get(ticker, 'symbol') or
@@ -241,9 +292,9 @@ def extract_analysis_data(ticker, quote):
         decision = "long_possible"
     elif reversal_signal == "bearish_reversal":
         decision = "short_possible"
-    elif dominance == "buy" and pressure_ratio and pressure_ratio < 0.8:
+    elif dominance == "buy" and pressure_ratio and pressure_ratio < LONG_PRESSURE_THRESHOLD:
         decision = "long_possible" if trend == "up" else "observe"
-    elif dominance == "sell" and pressure_ratio and pressure_ratio > 1.2:
+    elif dominance == "sell" and pressure_ratio and pressure_ratio > SHORT_PRESSURE_THRESHOLD:
         decision = "short_possible" if trend == "down" else "observe"
 
     # =============================
@@ -267,12 +318,12 @@ def extract_analysis_data(ticker, quote):
     # 進場訊號
     # =============================
     short_raw = (
-        pressure_ratio and pressure_ratio > 1.3 and
+        pressure_ratio and pressure_ratio > SHORT_PRESSURE_THRESHOLD and
         last_price and mid_price and last_price < mid_price and
         trend == "down" and reversal_signal is None and not is_limit_locked
     )
     long_raw = (
-        pressure_ratio and pressure_ratio < 0.8 and
+        pressure_ratio and pressure_ratio < LONG_PRESSURE_THRESHOLD and
         last_price and mid_price and last_price > mid_price and
         trend == "up" and reversal_signal is None and
         not is_limit_locked and not is_over_7_percent and not is_fomo_extreme
@@ -281,12 +332,9 @@ def extract_analysis_data(ticker, quote):
     if symbol not in entry_memory:
         entry_memory[symbol] = {"short": 0, "long": 0, "short_time": None, "long_time": None}
 
-    now = time.time()
-    TIME_WINDOW = 60
-
     def update_trigger(side):
         time_key = f"{side}_time"
-        if entry_memory[symbol][time_key] is not None and (now - entry_memory[symbol][time_key]) <= TIME_WINDOW:
+        if entry_memory[symbol][time_key] is not None and (now - entry_memory[symbol][time_key]) <= ENTRY_CONFIRM_WINDOW_SECS:
             entry_memory[symbol][side] += 1
         else:
             entry_memory[symbol][side] = 1
@@ -339,10 +387,7 @@ def extract_analysis_data(ticker, quote):
     entry_zone = {"lower": None, "upper": None}
     if mid_price and last_price:
         if decision in ["long_possible", "short_possible"]:
-            entry_zone = {
-                "lower": round(mid_price - 1, 2),
-                "upper": round(mid_price + 1, 2)
-            }
+            entry_zone = _entry_zone_from_mid(mid_price)
 
     invalid_price = None
     dynamic_stop  = None
@@ -385,109 +430,6 @@ def extract_analysis_data(ticker, quote):
             "change_percent": change_percent,
         },
     }
-
-# ==========================================
-# 波段投資診斷邏輯
-# ==========================================
-def extract_investment_data(ticker, daily_data):
-    symbol     = _get(ticker, 'symbol') or "unknown"
-    last_price = (
-        _to_float(_get(ticker, 'lastPrice')) or
-        _to_float(_get(ticker, 'last_price')) or
-        _to_float(_get(ticker, 'last'))
-    )
-
-    ma5  = daily_data.get("ma5")
-    ma20 = daily_data.get("ma20")
-    ma60 = daily_data.get("ma60")
-    rsi  = daily_data.get("rsi")
-    yoy  = daily_data.get("yoy", 0)
-
-    is_bull   = (last_price > ma5 > ma20 > ma60) if (last_price and ma5 and ma20 and ma60) else False
-    is_growth = yoy > 15
-
-    decision     = "investment_watch"
-    signal_grade = "C"
-    if is_bull and is_growth and rsi and 50 < rsi < 75:
-        decision     = "strong_buy_candidate"
-        signal_grade = "A"
-
-    return {
-        "type":         "INVESTMENT",
-        "symbol":       symbol,
-        "decision":     decision,
-        "signal_grade": signal_grade,
-        "indicators": {
-            "price":     last_price,
-            "ma_status": "多頭排列" if is_bull else "整理中",
-            "rsi":       rsi,
-            "yoy":       yoy,
-        },
-    }
-
-# =============================================
-# AI Telegram 報告 (防彈修正版)
-# =============================================
-def send_ai_telegram_report(analysis_result, gemini_key=None, tg_token=None, tg_chat_id=None):
-    gemini_key = gemini_key or os.getenv("GEMINI_API_KEY", "")
-    tg_token   = tg_token   or os.getenv("TG_BOT_TOKEN", "")
-    tg_chat_id = tg_chat_id or os.getenv("TG_CHAT_ID", "")
-    try:
-        genai.configure(api_key=gemini_key)
-        model_list   = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        if not model_list:
-            raise RuntimeError("Gemini 無可用模型")
-        correct_name = next((m for m in model_list if 'flash' in m), model_list[0])
-        ai_model     = genai.GenerativeModel(correct_name)
-
-        symbol        = analysis_result['symbol']
-        is_investment = analysis_result.get("type") == "INVESTMENT"
-        analysis_type_str = "「波段投資標的」" if is_investment else "「極短線當沖」"
-        tone_instruction  = "專注於均線趨勢與基本面營收" if is_investment else "專注於五檔力道與價格乖離"
-
-        prompt = f"""
-        你是一位精準的台股交易專家。請針對這份{analysis_type_str}數據撰寫投資快報。
-        {tone_instruction}，口吻需專業且帶點評分感。
-
-        【數據內容】:
-        {json.dumps(analysis_result, ensure_ascii=False)}
-
-        【撰寫規範】:
-        1. 標題：【{symbol}】今日診斷 / 評級：{analysis_result['signal_grade']}
-        2. 分點說明：目前狀況、數據診斷、操作建議。
-        3. 結尾附上 TradingView：https://www.tradingview.com/chart/?symbol=TWSE:{symbol}
-        4. 請多用 Emoji 增加易讀性。
-        """
-
-        response    = ai_model.generate_content(prompt)
-        report_text = response.text
-
-        tg_url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
-
-        # --- 第一次嘗試：帶 Markdown 格式 ---
-        res = requests.post(tg_url, json={
-            "chat_id":    tg_chat_id,
-            "text":       report_text,
-            "parse_mode": "Markdown"
-        }, timeout=10)
-
-        # --- 如果 Markdown 失敗 (通常是符號衝突)，嘗試純文字發送 ---
-        if res.status_code != 200:
-            print(f"⚠️ Markdown 格式失效 (錯誤 {res.status_code})，嘗試純文字降級發送...")
-            res = requests.post(tg_url, json={
-                "chat_id":    tg_chat_id,
-                "text":       report_text
-            }, timeout=10)
-
-        # --- 最終檢查 ---
-        if res.status_code == 200:
-            print(f"✅ {symbol} 報告實質送達！(模型: {correct_name})")
-        else:
-            print(f"❌ Telegram API 拒絕發送：{res.text}")
-
-    except Exception as e:
-        print(f"❌ AI 報告崩潰: {e}")
-
 
 # =============================================
 # 狀態管理

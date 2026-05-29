@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.chiachun.railway.rotate_logs</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/chiachun/Desktop/railway-market-api/scripts/rotate_logs.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/chiachun/Desktop/railway-market-api</string>
+
+    <!-- 每天凌晨 04:00 跑一次 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>4</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/chiachun/Desktop/railway-market-api/log/rotate_logs.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/chiachun/Desktop/railway-market-api/log/rotate_logs.stderr.log</string>
+</dict>
+</plist>

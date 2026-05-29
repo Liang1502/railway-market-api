@@ -37,7 +37,7 @@ import logging
 import tempfile
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -46,27 +46,47 @@ POSITIONS_FILE   = os.path.join(os.path.dirname(__file__), "positions.json")
 TRADES_FILE      = os.path.join(os.path.dirname(__file__), "trades.json")
 DEFAULT_INTERVAL = 6
 
-_BASE      = os.getenv("RAILWAY_API_URL", "https://web-production-641b.up.railway.app")
+_BASE      = os.getenv("RAILWAY_API_URL", "http://127.0.0.1:8000")
 TG_TOKEN   = os.getenv("TG_BOT_TOKEN",  "")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID",    "")
 
 STOP_PCT = 0.02
 T1_PCT   = 0.02
 T2_PCT   = 0.03
+SHORT_ADD_V6_THRESHOLD = -60
 
 def _atr_pcts(sym: str) -> tuple:
-    """查 API 取昨日 (high-low)/close 波幅，計算自適應 stop/T1/T2 比例。
-    若無資料則回傳預設值。
+    """查 API 取 ATR/true range 波幅，計算自適應 stop/T1/T2 比例。
+    若缺少前收資料則退回昨日 high-low；若無資料則回傳預設值。
     """
     try:
         r = requests.get(f"{_BASE}/analysis-input/{sym}", timeout=8)
         if r.status_code == 200:
             d = r.json()
+            api_atr = safe_float(d.get("atr_pct"))
+            if api_atr is not None and api_atr > 0:
+                atr = api_atr / 100 if api_atr > 1 else api_atr
+                stop = max(0.015, min(0.03,  atr * 0.8))
+                t1   = max(0.02,  min(0.05,  atr * 1.0))
+                t2   = max(0.03,  min(0.07,  atr * 1.5))
+                return stop, t1, t2
+
             y_high  = safe_float(d.get("y_high"))
             y_low   = safe_float(d.get("y_low"))
             y_close = safe_float(d.get("y_close"))
+            y_prev_close = safe_float(
+                d.get("y_prev_close") or d.get("prev_close") or d.get("previous_close")
+            )
             if y_high is not None and y_low is not None and y_close and y_close > 0:
-                atr = (y_high - y_low) / y_close
+                if y_prev_close and y_prev_close > 0:
+                    tr = max(
+                        y_high - y_low,
+                        abs(y_high - y_prev_close),
+                        abs(y_low - y_prev_close),
+                    )
+                else:
+                    tr = y_high - y_low
+                atr = tr / y_close
                 stop = max(0.015, min(0.03,  atr * 0.8))
                 t1   = max(0.02,  min(0.05,  atr * 1.0))
                 t2   = max(0.03,  min(0.07,  atr * 1.5))
@@ -167,7 +187,11 @@ def data_age_secs(ind: dict):
         return None
     try:
         ts = datetime.fromisoformat(ts_str)
-        return (datetime.utcnow() - ts).total_seconds()
+        now = datetime.now(timezone.utc)
+        # 相容舊版可能寫入的 naive datetime
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (now - ts).total_seconds()
     except Exception:
         return None
 
@@ -315,7 +339,7 @@ def compute_strategy(pos: dict, price: float, ind: dict) -> tuple:
                 return "🟠 達 T1 且 KD 轉強，建議減碼或移停損至成本", "warn"
             return f"🟡 達停利 T1，建議移停損至成本 {entry:.2f}", "warn"
         # 加碼條件：需要 KD 剛形成死叉（非靜態偏空）+ VWAP 跌破 + V6 強空
-        if gain_pct > 0.5 and kd_death_fresh and below_vwap and v6 is not None and v6 <= -20:
+        if gain_pct > 0.5 and kd_death_fresh and below_vwap and v6 is not None and v6 <= SHORT_ADD_V6_THRESHOLD:
             return "🔵 空方動能齊備（V6 KD死叉 VWAP 全空），可考慮加碼", "add"
         if gain_pct < -1.5 and kd_gold_fresh:
             return "🟠 虧損加速 + KD 剛金叉，注意是否觸及停損！", "warn"
@@ -486,6 +510,12 @@ def cmd_add(args):
         "added_at":  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
     save_positions(positions)
+
+    # 同步推進 server 的 watch_set，讓 uploader 訂閱清單立刻納入此標的
+    try:
+        requests.get(f"{_BASE}/analysis-batch", params={"symbols": sym}, timeout=5)
+    except Exception as e:
+        print(f"[WARN] 同步 watch_set 失敗（不影響本地部位）: {e}")
 
     dir_label = "多↑" if direction == "long" else "空↓"
     atr_hint = "" if stop_pct == STOP_PCT else f"  (ATR自適應: 停損{stop_pct*100:.1f}% T1{t1_pct*100:.1f}% T2{t2_pct*100:.1f}%)"

@@ -9,7 +9,8 @@ import main
 
 
 @pytest.fixture(autouse=True)
-def clean_cache():
+def clean_cache(monkeypatch):
+    monkeypatch.setattr(main, "_refresh_daytrade_exclusions_if_needed", lambda: None)
     main.market_data.clear()
     main.wishlist.clear()
     main.watch_set.clear()
@@ -84,6 +85,7 @@ def test_scan_market_sorts_candidates_by_v6_score_first():
         "decision": "short_possible",
         "score": 20,
         "v6_score": -50,
+        "structure": {"pressure_ratio": 1.3},
         "entry_signal": {"long_trigger": False, "short_trigger": False},
     }
     main.market_data["D"] = _payload("D") | {
@@ -98,6 +100,132 @@ def test_scan_market_sorts_candidates_by_v6_score_first():
 
     assert result["top_long"][0]["symbol"] == "B"
     assert result["top_short"][0]["symbol"] == "C"
+    assert [item["symbol"] for item in result["top_short"]] == ["C"]
+
+
+def test_scan_market_applies_spec_candidate_gates():
+    main.market_data["SHORT_OK"] = _payload("SHORT_OK") | {
+        "symbol": "SHORT_OK",
+        "decision": "short_possible",
+        "score": 20,
+        "v6_score": -30,
+        "structure": {"pressure_ratio": 1.3},
+        "entry_signal": {"long_trigger": False, "short_trigger": True},
+    }
+    main.market_data["SHORT_WEAK_V6"] = _payload("SHORT_WEAK_V6") | {
+        "symbol": "SHORT_WEAK_V6",
+        "decision": "short_possible",
+        "score": 20,
+        "v6_score": -10,
+        "structure": {"pressure_ratio": 1.3},
+        "entry_signal": {"long_trigger": False, "short_trigger": True},
+    }
+    main.market_data["SHORT_WEAK_PRESSURE"] = _payload("SHORT_WEAK_PRESSURE") | {
+        "symbol": "SHORT_WEAK_PRESSURE",
+        "decision": "short_possible",
+        "score": 20,
+        "v6_score": -30,
+        "structure": {"pressure_ratio": 1.1},
+        "entry_signal": {"long_trigger": False, "short_trigger": True},
+    }
+    main.market_data["LONG_OK"] = _payload("LONG_OK") | {
+        "symbol": "LONG_OK",
+        "decision": "long_possible",
+        "score": 80,
+        "v6_score": 80,
+        "price": {"change_percent": 6.4},
+        "entry_signal": {"long_trigger": True, "short_trigger": False},
+    }
+    main.market_data["LONG_FOMO"] = _payload("LONG_FOMO") | {
+        "symbol": "LONG_FOMO",
+        "decision": "long_possible",
+        "score": 90,
+        "v6_score": 90,
+        "price": {"change_percent": 6.5},
+        "entry_signal": {"long_trigger": True, "short_trigger": False},
+    }
+
+    result = main.scan_market()
+
+    assert [item["symbol"] for item in result["top_short"]] == ["SHORT_OK"]
+    assert [item["symbol"] for item in result["triggered_short"]] == ["SHORT_OK"]
+    assert [item["symbol"] for item in result["top_long"]] == ["LONG_OK"]
+    assert [item["symbol"] for item in result["triggered_long"]] == ["LONG_OK"]
+
+
+@pytest.fixture()
+def tmp_daytrade_exclude_file(tmp_path, monkeypatch):
+    path = str(tmp_path / "daytrade_exclusions.json")
+    monkeypatch.setattr(main, "DAYTRADE_EXCLUDE_FILE", path)
+    return path
+
+
+def test_scan_market_excludes_daytrade_blocked_symbols(tmp_daytrade_exclude_file):
+    with open(tmp_daytrade_exclude_file, "w") as f:
+        json.dump({"symbols": {"2454": {"reason": "處置股"}}}, f)
+
+    main.market_data["2454"] = _payload("2454") | {
+        "symbol": "2454",
+        "decision": "long_possible",
+        "score": 90,
+        "v6_score": 100,
+        "entry_signal": {"long_trigger": True, "short_trigger": False},
+    }
+    main.market_data["2330"] = _payload("2330") | {
+        "symbol": "2330",
+        "decision": "long_possible",
+        "score": 80,
+        "v6_score": 80,
+        "entry_signal": {"long_trigger": False, "short_trigger": False},
+    }
+
+    result = main.scan_market()
+
+    assert result["top_long"][0]["symbol"] == "2330"
+    assert result["excluded_symbols"] == ["2454"]
+
+
+def test_scan_market_ignores_expired_daytrade_exclusions(tmp_daytrade_exclude_file):
+    with open(tmp_daytrade_exclude_file, "w") as f:
+        json.dump({"symbols": {"2454": {"expires_on": "2000-01-01"}}}, f)
+
+    main.market_data["2454"] = _payload("2454") | {
+        "symbol": "2454",
+        "decision": "long_possible",
+        "score": 90,
+        "v6_score": 100,
+        "entry_signal": {"long_trigger": True, "short_trigger": False},
+    }
+
+    result = main.scan_market()
+
+    assert result["top_long"][0]["symbol"] == "2454"
+    assert result["excluded_symbols"] == []
+
+
+def test_scan_market_returns_all_triggered_candidates_beyond_top_three():
+    for idx, score in enumerate([100, 90, 80], start=1):
+        symbol = f"L{idx}"
+        main.market_data[symbol] = _payload(symbol) | {
+            "symbol": symbol,
+            "decision": "long_possible",
+            "score": score,
+            "v6_score": score,
+            "entry_signal": {"long_trigger": False, "short_trigger": False},
+        }
+    main.market_data["TRIG"] = _payload("TRIG") | {
+        "symbol": "TRIG",
+        "decision": "observe",
+        "score": 10,
+        "v6_score": 10,
+        "entry_signal": {"long_trigger": True, "short_trigger": False},
+    }
+
+    result = main.scan_market()
+
+    assert [item["symbol"] for item in result["top_long"]] == ["L1", "L2", "L3"]
+    assert [item["symbol"] for item in result["triggered_long"]] == ["TRIG"]
+    assert result["triggered_long_count"] == 1
 
 
 # =============================

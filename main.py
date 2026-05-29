@@ -1,11 +1,13 @@
 from fastapi import FastAPI, HTTPException, Header
 from typing import Dict, Set
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import asyncio
 import json
 import logging
 import os
 import tempfile
+
+from disposition import refresh_daytrade_exclusions
 
 try:
     from dotenv import load_dotenv
@@ -16,7 +18,11 @@ except ImportError:
 app = FastAPI()
 
 WATCH_SET_FILE  = "watch_set.json"
+DAYTRADE_EXCLUDE_FILE = "daytrade_exclusions.json"
+DISPOSITION_REFRESH_SECS = int(os.getenv("DISPOSITION_REFRESH_SECS", "3600"))
+DISPOSITION_REFRESH_TIMEOUT = float(os.getenv("DISPOSITION_REFRESH_TIMEOUT", "8"))
 _watch_set_lock = asyncio.Lock()
+_last_disposition_refresh = datetime.min.replace(tzinfo=timezone.utc)
 
 market_data: Dict[str, dict] = {}
 wishlist:    Set[str] = set()
@@ -50,9 +56,10 @@ async def _save_watch_set() -> None:
 
 watch_set: Set[str] = _load_watch_set()   # watch.py 請求的標的，永久追蹤不清除
 
-MY_SECRET_TOKEN = os.getenv("API_SECRET_TOKEN", "ChiaChun_Super_Secret_888")
+MY_SECRET_TOKEN = os.environ["API_SECRET_TOKEN"]
 
-STALE_SECS = 90   # 超過此秒數視為過期，重新觸發 wishlist
+STALE_SECS = int(os.getenv("STALE_SECS", "180"))   # 超過此秒數視為過期，重新觸發 wishlist
+TW_TZ = timezone(timedelta(hours=8))
 
 def _num(data: dict, key: str, default: float) -> float:
     try:
@@ -64,12 +71,68 @@ def _num(data: dict, key: str, default: float) -> float:
 def cache_age_secs(data: dict) -> float:
     ts_str = data.get("_server_ts", "")
     try:
-        return (datetime.utcnow() - datetime.fromisoformat(ts_str)).total_seconds()
+        ts = datetime.fromisoformat(ts_str)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts).total_seconds()
     except Exception:
         return 9999
 
 def is_stale(data: dict) -> bool:
     return cache_age_secs(data) > STALE_SECS
+
+def _today_tw_date():
+    return datetime.now(TW_TZ).date()
+
+def _refresh_daytrade_exclusions_if_needed() -> None:
+    global _last_disposition_refresh
+    now = datetime.now(timezone.utc)
+    if (now - _last_disposition_refresh).total_seconds() < DISPOSITION_REFRESH_SECS:
+        return
+    try:
+        refresh_daytrade_exclusions(
+            DAYTRADE_EXCLUDE_FILE,
+            timeout=DISPOSITION_REFRESH_TIMEOUT,
+            as_of=_today_tw_date(),
+        )
+        _last_disposition_refresh = now
+    except Exception:
+        _last_disposition_refresh = now
+        logging.exception("official daytrade exclusion refresh failed; using local file")
+
+def _load_daytrade_exclusions() -> Dict[str, dict]:
+    try:
+        with open(DAYTRADE_EXCLUDE_FILE) as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        logging.exception("daytrade exclusions load failed")
+        return {}
+
+    symbols = raw.get("symbols", {})
+    if isinstance(symbols, list):
+        symbols = {str(sym): {"reason": "daytrade_excluded"} for sym in symbols}
+
+    result = {}
+    today = _today_tw_date()
+    for symbol, meta in symbols.items():
+        symbol = str(symbol).strip()
+        if not symbol:
+            continue
+        meta = meta if isinstance(meta, dict) else {"reason": str(meta)}
+        expires_on = meta.get("expires_on")
+        if expires_on:
+            try:
+                if datetime.fromisoformat(expires_on).date() < today:
+                    continue
+            except ValueError:
+                logging.warning("invalid daytrade exclusion expires_on for %s: %s", symbol, expires_on)
+        result[symbol] = meta
+    return result
+
+def is_daytrade_excluded(data: dict, exclusions: Dict[str, dict]) -> bool:
+    return str(data.get("symbol", "")).strip() in exclusions
 
 # =============================
 # 📥 接收資料（uploader.py 打這裡）
@@ -81,7 +144,7 @@ def update_data(data: dict, authorization: str = Header(None)):
 
     symbol = data.get("symbol")
     if symbol:
-        data["_server_ts"] = datetime.utcnow().isoformat()
+        data["_server_ts"] = datetime.now(timezone.utc).isoformat()
         market_data[symbol] = data
         wishlist.discard(symbol)
     return {"status": "ok"}
@@ -215,31 +278,62 @@ async def remove_from_watch_list(symbol: str, authorization: str = Header(None))
 def scan_market():
     short_list = []
     long_list  = []
+    triggered_short = []
+    triggered_long = []
+    _refresh_daytrade_exclusions_if_needed()
+    exclusions = _load_daytrade_exclusions()
+    excluded_symbols = []
 
-    for data in market_data.values():
+    for data in list(market_data.values()):
         if is_stale(data):
             continue
         if not data.get("decision"):
+            continue
+        if is_daytrade_excluded(data, exclusions):
+            excluded_symbols.append(data.get("symbol"))
             continue
 
         decision      = data.get("decision", "")
         entry         = data.get("entry_signal", {})
         short_trigger = entry.get("short_trigger", False)
         long_trigger  = entry.get("long_trigger",  False)
+        pressure_ratio = _num(data.get("structure") or {}, "pressure_ratio", 0)
+        change_percent = _num(data.get("price") or {}, "change_percent", 0)
+        is_short_candidate = (
+            (decision == "short_possible" or short_trigger)
+            and _num(data, "v6_score", 9999) < -20
+            and pressure_ratio > 1.2
+        )
+        is_long_candidate = (
+            (decision == "long_possible" or long_trigger)
+            and change_percent < 6.5
+        )
 
-        if decision == "short_possible" or short_trigger:
+        if is_short_candidate:
             short_list.append(data)
-        if decision == "long_possible" or long_trigger:
+        if is_long_candidate:
             long_list.append(data)
+        if short_trigger and is_short_candidate:
+            triggered_short.append(data)
+        if long_trigger and is_long_candidate:
+            triggered_long.append(data)
 
     short_list.sort(key=lambda x: (_num(x, "v6_score", 9999), _num(x, "score", 50)))
     long_list.sort(key=lambda x: (_num(x, "v6_score", -9999), _num(x, "score", 50)), reverse=True)
+    triggered_short.sort(key=lambda x: (_num(x, "v6_score", 9999), _num(x, "score", 50)))
+    triggered_long.sort(key=lambda x: (_num(x, "v6_score", -9999), _num(x, "score", 50)), reverse=True)
 
     return {
         "short_count": len(short_list),
         "long_count":  len(long_list),
+        "triggered_short_count": len(triggered_short),
+        "triggered_long_count":  len(triggered_long),
         "top_short":   short_list[:3],
         "top_long":    long_list[:3],
+        "triggered_short": triggered_short,
+        "triggered_long":  triggered_long,
+        "excluded_count": len(excluded_symbols),
+        "excluded_symbols": sorted(set(sym for sym in excluded_symbols if sym)),
     }
 
 # =============================

@@ -10,6 +10,8 @@ import csv
 import threading
 import json
 import traceback
+import sys
+import signal
 from datetime import datetime, timedelta, timezone
 from collections import deque
 
@@ -23,11 +25,11 @@ load_dotenv()
 # ===============================
 # 配置區
 # ===============================
-_BASE           = os.getenv("RAILWAY_API_URL", "https://web-production-641b.up.railway.app")
+_BASE           = os.getenv("RAILWAY_API_URL", "http://127.0.0.1:8000")
 API_URL         = f"{_BASE}/update"
 WISHLIST_URL    = f"{_BASE}/wishlist"
 WATCH_LIST_URL  = f"{_BASE}/watch-list"
-MY_SECRET_TOKEN = os.getenv("API_SECRET_TOKEN", "ChiaChun_Super_Secret_888")
+MY_SECRET_TOKEN = os.environ["API_SECRET_TOKEN"]
 MY_HOLDINGS    = ["1815", "2481", "3324", "5351", "6789", "5386", "2493", "6568"]
 
 TW_TZ = timezone(timedelta(hours=8))
@@ -42,6 +44,35 @@ YDAY_REFRESH_COOLDOWN         = 60
 MAX_ERROR_COUNT               = 3
 
 _rate_limited_until = 0  # Fugle 429 全域退避時間戳
+
+
+def is_fugle_auth_error(exc) -> bool:
+    msg = str(exc)
+    return (
+        "Token expired" in msg
+        or "Invalid authentication credentials" in msg
+        or ("Status: 401" in msg and "api.fugle.tw" in msg)
+    )
+
+
+def restart_for_fugle_auth_error(exc) -> None:
+    if not is_fugle_auth_error(exc):
+        return
+    print(f"[系統] Fugle 授權已失效，重新啟動 uploader 取得新 token: {exc}", flush=True)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+def is_transient_network_error(exc) -> bool:
+    msg = str(exc)
+    return (
+        "NameResolutionError" in msg
+        or "Failed to resolve" in msg
+        or "Read timed out" in msg
+        or "ConnectTimeout" in msg
+        or "ConnectionError" in msg
+        or "Max retries exceeded" in msg
+    )
+
 
 # 診斷開關
 DIAG_MODE = False
@@ -62,16 +93,8 @@ WEIGHTS = {
     "trend_down":      -10,
 }
 
-# V6.4 進出場參數（模擬追蹤，不真實下單）
+# 評分動能歷史
 MAX_HISTORY      = 5      # 評分歷史保留幾筆
-MAX_LOSS_STREAK  = 3      # 連續虧損幾次後停止進場
-ENTRY_THRESHOLD  = 60     # V6 分數超過此值才建立進場計畫
-MOMENTUM_MIN     = 15     # 動能至少需達此值才執行進場計畫
-STOP_LOSS_RATIO  = 0.98   # 基礎停損比例
-TRAIL_TRIGGER_1  = 0.02   # 獲利 2% 啟動第一段移動停損
-TRAIL_RATIO_1    = 0.995  # 第一段移動停損比例
-TRAIL_TRIGGER_2  = 0.03   # 獲利 3% 啟動第二段移動停損
-TRAIL_RATIO_2    = 0.997  # 第二段移動停損比例（更緊）
 
 # ===============================
 # 核心工具
@@ -200,11 +223,8 @@ yday_refresh_time  = {}
 error_count        = {}
 score_board        = {}
 
-# V6.4 狀態
+# 評分歷史（compute_v6_score 的動能來源）
 score_history      = {}   # {symbol: deque([score, ...])}
-positions          = {}   # {symbol: {"entry": price, "stop": price}}
-entry_plan         = {}   # {symbol: {"base": price, "step": 0}}  分批進場計畫
-trade_log          = []   # [{"symbol": ..., "pnl": ...}]
 _prev_kd           = {}   # {symbol: (prev_k, prev_d)}，用於偵測真實交叉事件
 
 # ===============================
@@ -451,6 +471,8 @@ def get_vwap_1min(symbol, current_price=None, candles=None):
 def get_volume_info(symbol, candles=None):
     if candles is None:
         candles = fetch_candles(symbol, count=30)
+    if candles and candles[-1].get("time_key") == now_tw().strftime("%Y-%m-%d %H:%M"):
+        candles = candles[:-1]
     if len(candles) < 10:
         return {"volume_expand": False, "volume_ratio": None}
 
@@ -696,128 +718,6 @@ def compute_v6_score(symbol, data):
     return round(score, 2), tags
 
 # ===============================
-# V6.4 進出場（模擬追蹤，不真實下單）
-# ===============================
-def can_enter():
-    """連續虧損超過門檻就停止進場"""
-    losses = 0
-    for t in reversed(trade_log):
-        if t["pnl"] < 0:
-            losses += 1
-        else:
-            break
-    return losses < MAX_LOSS_STREAK
-
-def try_entry(symbol, price, v6_score):
-    """
-    V6.4 分批進場：
-    - 分數 > ENTRY_THRESHOLD 且動能 >= MOMENTUM_MIN → 建立計畫
-    - 計畫建立後等待 price <= vwap 時進場（拉回確認）
-    """
-    if symbol in positions:
-        return
-    if not can_enter():
-        return
-
-    mom = momentum_score(symbol)
-
-    if v6_score > ENTRY_THRESHOLD and mom >= MOMENTUM_MIN:
-        if symbol not in entry_plan:
-            entry_plan[symbol] = {"base": price, "step": 0, "created": time.time()}
-            print(f"🧭 [模擬計畫] {symbol} V6:{v6_score} 動能:{mom:.1f}")
-
-def execute_entry(symbol, price, vwap, v6_score=None):
-    """
-    執行分批進場計畫：
-    step 0 → 等待 price <= vwap*1.002（拉回確認）
-    step 1 → price 再次站上 vwap → 進場第一批
-    step 2 → 獲利 1% → 加碼第二批（記錄，不真實加碼）
-    step 3 → 獲利 2% → 計畫完成
-    """
-    if symbol not in entry_plan:
-        return
-    if symbol in positions and entry_plan.get(symbol, {}).get("step", 0) < 2:
-        return
-
-    plan = entry_plan[symbol]
-
-    # 過期判斷：超過 10 分鐘沒完成 → 放棄計畫
-    if time.time() - plan.get("created", 0) > 600:
-        print(f"⏱️ [計畫逾時] {symbol} 超過 10 分鐘未完成，放棄")
-        entry_plan.pop(symbol, None)
-        return
-
-    if plan["step"] == 0:
-        if vwap and price <= vwap * 1.002:
-            plan["step"] = 1
-
-    elif plan["step"] == 1:
-        if symbol not in positions and vwap and price > vwap:
-            mom = momentum_score(symbol)
-            if v6_score is None or v6_score <= ENTRY_THRESHOLD or mom < MOMENTUM_MIN:
-                print(
-                    f"🛑 [取消進場] {symbol} "
-                    f"V6:{v6_score} 動能:{mom:.1f} 未達門檻"
-                )
-                entry_plan.pop(symbol, None)
-                return
-            positions[symbol] = {
-                "entry": price,
-                "stop":  price * STOP_LOSS_RATIO,
-                "size":  1,
-            }
-            plan["step"] = 2
-            print(f"🚀 [模擬進場] {symbol} 第一批 價:{price}")
-
-    elif plan["step"] == 2:
-        pos = positions.get(symbol)
-        if pos and price > pos["entry"] * 1.01:
-            # 加碼：更新加權平均成本
-            old_entry = pos["entry"]
-            old_size  = pos.get("size", 1)
-            new_size  = old_size + 1
-            new_entry = (old_entry * old_size + price) / new_size
-            pos["entry"] = round(new_entry, 4)
-            pos["size"]  = new_size
-            # 停損也隨平均成本更新
-            pos["stop"]  = max(pos["stop"], new_entry * STOP_LOSS_RATIO)
-            plan["step"] = 3
-            print(f"🚀 [模擬加碼] {symbol} 第二批 價:{price} 新均成本:{new_entry:.2f}")
-
-    elif plan["step"] == 3:
-        pos = positions.get(symbol)
-        if pos and price > pos["entry"] * 1.02:
-            entry_plan.pop(symbol, None)
-
-def update_trailing_stop(symbol, price):
-    """
-    V6.4 分段移動停損：
-    獲利 2% → 啟動第一段（緊縮到 price * 0.995）
-    獲利 3% → 啟動第二段（更緊，price * 0.997）
-    """
-    if symbol not in positions:
-        return
-    pos = positions[symbol]
-    gain = (price - pos["entry"]) / pos["entry"]
-
-    if gain > TRAIL_TRIGGER_2:
-        pos["stop"] = max(pos["stop"], price * TRAIL_RATIO_2)
-    elif gain > TRAIL_TRIGGER_1:
-        pos["stop"] = max(pos["stop"], price * TRAIL_RATIO_1)
-
-def try_exit(symbol, price, v6_score):
-    if symbol not in positions:
-        return
-    pos = positions[symbol]
-    if price < pos["stop"] or v6_score < 0:
-        pnl = price - pos["entry"]
-        trade_log.append({"symbol": symbol, "pnl": pnl, "time": today_tw_str()})
-        positions.pop(symbol)
-        entry_plan.pop(symbol, None)
-        print(f"📉 [模擬出場] {symbol} 價:{price} PnL:{pnl:+.2f}")
-
-
-# ===============================
 # 建立分析資料
 # ===============================
 def build_payload(symbol, current_price_hint=None):
@@ -926,6 +826,17 @@ def build_payload(symbol, current_price_hint=None):
     })
     sync_vwap_risk(data, curr_p, vwap_1m)
 
+    # 補救：exchange avg_price 跟不上跳空下殺，導致 trend=neutral、decision=observe
+    # 改用 1分K VWAP 重新判斷：現價跌破 VWAP 超過 0.3% 且委賣主導，升為 short_possible
+    if (
+        data.get("decision") == "observe"
+        and vwap_1m is not None
+        and curr_p is not None
+        and (curr_p - vwap_1m) / vwap_1m * 100 < -0.3
+        and (data.get("structure") or {}).get("dominance") == "sell"
+    ):
+        data["decision"] = "short_possible"
+
     # score_price 必須在 compute_v6_score 之前設定，否則函數內取到 None
     data["score_price"] = curr_p
 
@@ -933,14 +844,6 @@ def build_payload(symbol, current_price_hint=None):
     v6_score, v6_tags = compute_v6_score(symbol, data)
     data["v6_score"] = v6_score
     data["v6_tags"]  = " | ".join(v6_tags[:6]) if v6_tags else ""
-
-    # V6.4 模擬進出場
-    if curr_p:
-        vwap_for_entry = vwap_1m
-        update_trailing_stop(symbol, curr_p)
-        try_exit(symbol, curr_p, v6_score)
-        try_entry(symbol, curr_p, v6_score)
-        execute_entry(symbol, curr_p, vwap_for_entry, v6_score)
 
     print(
         f"[BUILD] {symbol} curr={curr_p} "
@@ -1045,19 +948,6 @@ def print_score_board():
                         f"{d.get('v6_tags','')}"
                     )
 
-                if positions:
-                    print("\n📋 模擬持倉")
-                    for sym, pos in positions.items():
-                        curr = (score_board.get(sym) or {}).get("score_price") or "?"
-                        gain = ((curr - pos["entry"]) / pos["entry"] * 100) if isinstance(curr, float) else 0
-                        print(f"  {sym} 進場:{pos['entry']} 停損:{pos['stop']:.2f} 現價:{curr} 損益:{gain:+.1f}%")
-
-                if entry_plan:
-                    print("\n🧭 進場計畫")
-                    for sym, plan in entry_plan.items():
-                        curr = (score_board.get(sym) or {}).get("score_price") or "?"
-                        print(f"  {sym} Step:{plan['step']} 基準:{plan['base']} 現價:{curr}")
-
         except Exception as e:
             print(f"[ERROR] print_score_board: {e}")
 
@@ -1115,6 +1005,7 @@ def handle_message(message):
         error_count.pop(code, None)
 
     except Exception as e:
+        restart_for_fugle_auth_error(e)
         print(f"[ERROR] handle_message: {e}")
         traceback.print_exc()
 
@@ -1132,12 +1023,50 @@ def reconnect_websocket():
             ws_stock.subscribe({"channel": "trades", "symbols": syms})
             print(f"[系統] 重新訂閱完成：{len(syms)} 檔")
     except Exception as e:
+        restart_for_fugle_auth_error(e)
         print(f"[ERROR] 重新連線失敗: {e}")
 
 ws_stock.on("connect",    lambda: print("✅ [系統] 伺服器連線成功！"))
-ws_stock.on("disconnect", lambda: reconnect_websocket())
+ws_stock.on("disconnect", lambda *args: reconnect_websocket())
 ws_stock.on("message",    handle_message)
 ws_stock.connect()
+
+# ===============================
+# 安全關閉（fubon_neo native 執行緒防 segfault）
+# ===============================
+def _shutdown(exit_code: int = 0) -> None:
+    """呼叫 SDK logout 再用 os._exit() 繞過直譯器 teardown。
+
+    fubon_neo 在 macOS/Python 3.13 會啟動 native 背景執行緒，
+    若讓 Python 直譯器正常關閉，這些執行緒可能在 teardown 期間
+    回呼進 Python，導致 SIGSEGV（crash report Thread 14 EXC_BAD_ACCESS）。
+    用 os._exit() 直接終止 process 可繞過此問題。
+    """
+    print("[系統] 正在關閉 WebSocket...", flush=True)
+    try:
+        ws_stock.disconnect()
+    except Exception as e:
+        print(f"[WARN] ws_stock.disconnect 失敗: {e}", flush=True)
+
+    print("[系統] 正在登出 SDK...", flush=True)
+    logout = getattr(sdk, "logout", None)
+    if callable(logout):
+        try:
+            logout()
+        except Exception as e:
+            print(f"[WARN] sdk.logout 失敗: {e}", flush=True)
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(exit_code)
+
+
+def _sigterm_handler(signum, frame) -> None:  # noqa: ARG001
+    print("\n[系統] 收到 SIGTERM，正在安全關閉...", flush=True)
+    _shutdown(0)
+
+
+signal.signal(signal.SIGTERM, _sigterm_handler)
 
 # ===============================
 # 背景訂閱管理
@@ -1181,6 +1110,7 @@ def update_subscriptions():
                     with lock:
                         subscribed_symbols.update(new_symbols)
                 except Exception as sub_e:
+                    restart_for_fugle_auth_error(sub_e)
                     if "closed" in str(sub_e).lower():
                         reconnect_websocket()
                     else:
@@ -1201,9 +1131,11 @@ def update_subscriptions():
                         last_sent[sym] = {"key": "watchlist", "time": time.time()}
                     time.sleep(1)
                 except Exception as e:
+                    restart_for_fugle_auth_error(e)
                     print(f"[追蹤] {sym} 上傳失敗: {e}")
 
         except Exception as e:
+            restart_for_fugle_auth_error(e)
             print(f"[ERROR] update_subscriptions: {e}")
 
         time.sleep(10)
@@ -1223,81 +1155,86 @@ print("🚀 V6.3 穩健合併版啟動成功！正在監聽市場...")
 # ===============================
 # 心跳迴圈（含連續失敗保護）
 # ===============================
-try:
-    while True:
-        current_time = time.time()
+if __name__ == "__main__":
+    try:
+        while True:
+            current_time = time.time()
 
-        # 盤後：只跑一輪讓所有股票有初始資料，之後休眠
-        if not is_market_hours():
-            # 若 score_board 裡還沒有資料，先跑一輪
-            with lock:
-                missing = [s for s in subscribed_symbols if s not in score_board]
-            if missing:
-                # 逐一補齊沒有資料的股票
-                for sym in missing:
-                    # 連續失敗超過 3 次就標記跳過，不再重試
-                    if error_count.get(sym, 0) >= MAX_ERROR_COUNT:
-                        with lock:
-                            score_board[sym] = {"v6_score": None, "skipped": True}
-                        continue
-                    try:
-                        d_data = build_payload(sym)
-                        with lock:
-                            score_board[sym] = d_data
-                        send_to_cloud(d_data)
-                        k_v = d_data.get("k_1min")
-                        last_sent[sym] = {
-                            "key":  f"init-{int(k_v or 0)}",
-                            "time": time.time()
-                        }
-                        error_count.pop(sym, None)
-                        time.sleep(1)
-                    except Exception as e:
-                        print(f"[ERROR] 盤後初始化 {sym}: {e}")
-                        error_count[sym] = error_count.get(sym, 0) + 1
-                        if error_count[sym] >= MAX_ERROR_COUNT:
-                            print(f"[SKIP] {sym} 連續失敗 {error_count[sym]} 次，略過")
+            # 盤後：只跑一輪讓所有股票有初始資料，之後休眠
+            if not is_market_hours():
+                # 若 score_board 裡還沒有資料，先跑一輪
+                with lock:
+                    missing = [s for s in subscribed_symbols if s not in score_board]
+                if missing:
+                    # 逐一補齊沒有資料的股票
+                    for sym in missing:
+                        # 連續失敗超過 3 次就標記跳過，不再重試
+                        if error_count.get(sym, 0) >= MAX_ERROR_COUNT:
                             with lock:
                                 score_board[sym] = {"v6_score": None, "skipped": True}
-            else:
-                time.sleep(60)
-            continue
-
-        with lock:
-            targets = list(subscribed_symbols)
-
-        for sym in targets:
-            last_info = last_sent.get(sym, {"key": "", "time": 0})
-            if current_time - last_info["time"] <= HEARTBEAT_INTERVAL:
+                            continue
+                        try:
+                            d_data = build_payload(sym)
+                            with lock:
+                                score_board[sym] = d_data
+                            send_to_cloud(d_data)
+                            k_v = d_data.get("k_1min")
+                            last_sent[sym] = {
+                                "key":  f"init-{int(k_v or 0)}",
+                                "time": time.time()
+                            }
+                            error_count.pop(sym, None)
+                            time.sleep(1)
+                        except Exception as e:
+                            restart_for_fugle_auth_error(e)
+                            print(f"[ERROR] 盤後初始化 {sym}: {e}")
+                            error_count[sym] = error_count.get(sym, 0) + 1
+                            if error_count[sym] >= MAX_ERROR_COUNT:
+                                print(f"[SKIP] {sym} 連續失敗 {error_count[sym]} 次，略過")
+                                with lock:
+                                    score_board[sym] = {"v6_score": None, "skipped": True}
+                else:
+                    time.sleep(60)
                 continue
 
-            try:
-                d_data = build_payload(sym)
-                with lock:
-                    score_board[sym] = d_data
-                send_to_cloud(d_data)
+            with lock:
+                targets = list(subscribed_symbols)
 
-                k_v = d_data.get("k_1min")
-                last_sent[sym] = {
-                    "key":  f"hb-{d_data.get('v6_score')}-{int(k_v or 0)}-{round((d_data.get('_runtime_price') or d_data.get('current_price') or 0), 2)}",
-                    "time": time.time()
-                }
-                error_count.pop(sym, None)
-                time.sleep(1.5)
+            for sym in targets:
+                last_info = last_sent.get(sym, {"key": "", "time": 0})
+                if current_time - last_info["time"] <= HEARTBEAT_INTERVAL:
+                    continue
 
-            except Exception as e:
-                print(f"[ERROR] 心跳 {sym}: {e}")
-                error_count[sym] = error_count.get(sym, 0) + 1
-                if error_count[sym] >= MAX_ERROR_COUNT:
-                    print(f"[WARN] {sym} 連續失敗 {error_count[sym]} 次，暫停監控")
+                try:
+                    d_data = build_payload(sym)
                     with lock:
-                        subscribed_symbols.discard(sym)
-                        score_board.pop(sym, None)
+                        score_board[sym] = d_data
+                    send_to_cloud(d_data)
+
+                    k_v = d_data.get("k_1min")
+                    last_sent[sym] = {
+                        "key":  f"hb-{d_data.get('v6_score')}-{int(k_v or 0)}-{round((d_data.get('_runtime_price') or d_data.get('current_price') or 0), 2)}",
+                        "time": time.time()
+                    }
                     error_count.pop(sym, None)
+                    time.sleep(1.5)
 
-        time.sleep(1)
+                except Exception as e:
+                    restart_for_fugle_auth_error(e)
+                    if is_transient_network_error(e):
+                        print(f"[WARN] 心跳 {sym} 暫時網路失敗，保留監控稍後重試: {e}")
+                        time.sleep(1.5)
+                        continue
+                    print(f"[ERROR] 心跳 {sym}: {e}")
+                    error_count[sym] = error_count.get(sym, 0) + 1
+                    if error_count[sym] >= MAX_ERROR_COUNT:
+                        print(f"[WARN] {sym} 連續失敗 {error_count[sym]} 次，暫停監控")
+                        with lock:
+                            subscribed_symbols.discard(sym)
+                            score_board.pop(sym, None)
+                        error_count.pop(sym, None)
 
-except KeyboardInterrupt:
-    print("\n[系統] 手動停止...")
-    ws_stock.disconnect()
-    print("[系統] 已安全關閉。")
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        _shutdown(0)

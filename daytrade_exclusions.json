@@ -1,0 +1,573 @@
+{
+  "symbols": {
+    "050328": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "華固凱基56購01",
+      "start_on": "2026-05-28",
+      "expires_on": "2026-06-10"
+    },
+    "058462": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "汎銓元大59購05",
+      "start_on": "2026-05-25",
+      "expires_on": "2026-06-05"
+    },
+    "1591": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "駿吉-KY",
+      "start_on": "2026-05-21",
+      "expires_on": "2026-06-03"
+    },
+    "2061": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "風青",
+      "start_on": "2026-05-28",
+      "expires_on": "2026-06-10"
+    },
+    "2327": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "國巨*",
+      "start_on": "2026-05-26",
+      "expires_on": "2026-06-08"
+    },
+    "2424": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "隴華",
+      "start_on": "2026-05-26",
+      "expires_on": "2026-06-08"
+    },
+    "2454": {
+      "reason": "處置股，排除不能現沖標的",
+      "expires_on": "2026-05-20"
+    },
+    "2455": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "全新",
+      "start_on": "2026-05-27",
+      "expires_on": "2026-06-09"
+    },
+    "24552": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "全新二",
+      "start_on": "2026-05-27",
+      "expires_on": "2026-06-09"
+    },
+    "24553": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "全新三",
+      "start_on": "2026-05-27",
+      "expires_on": "2026-06-09"
+    },
+    "2478": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "大毅",
+      "start_on": "2026-05-26",
+      "expires_on": "2026-06-08"
+    },
+    "2492": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "華新科",
+      "start_on": "2026-05-27",
+      "expires_on": "2026-06-09"
+    },
+    "2911": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "麗嬰房",
+      "start_on": "2026-05-25",
+      "expires_on": "2026-06-05"
+    },
+    "3008": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "大立光",
+      "start_on": "2026-05-20",
+      "expires_on": "2026-06-02"
+    },
+    "3026": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "禾伸堂",
+      "start_on": "2026-05-26",
+      "expires_on": "2026-06-08"
+    },
+    "3090": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "日電貿",
+      "start_on": "2026-05-22",
+      "expires_on": "2026-06-04"
+    },
+    "3135": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "凌航",
+      "start_on": "2026-05-18",
+      "expires_on": "2026-05-29"
+    },
+    "31351": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "凌航一",
+      "start_on": "2026-05-18",
+      "expires_on": "2026-05-29"
+    },
+    "31352": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "凌航二",
+      "start_on": "2026-05-18",
+      "expires_on": "2026-05-29"
+    },
+    "3167": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "大量",
+      "start_on": "2026-05-26",
+      "expires_on": "2026-06-08"
+    },
+    "31672": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "大量二",
+      "start_on": "2026-05-26",
+      "expires_on": "2026-06-08"
+    },
+    "3189": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "景碩",
+      "start_on": "2026-05-28",
+      "expires_on": "2026-06-10"
+    },
+    "3191": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "雲嘉南",
+      "start_on": "2026-05-29",
+      "expires_on": "2026-06-11"
+    },
+    "3236": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "千如",
+      "start_on": "2026-05-28",
+      "expires_on": "2026-06-10"
+    },
+    "3491": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "昇達科",
+      "start_on": "2026-05-26",
+      "expires_on": "2026-06-08"
+    },
+    "3498": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "陽程",
+      "start_on": "2026-05-19",
+      "expires_on": "2026-06-01"
+    },
+    "3532": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "台勝科",
+      "start_on": "2026-05-29",
+      "expires_on": "2026-06-11"
+    },
+    "3624": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "光頡",
+      "start_on": "2026-05-21",
+      "expires_on": "2026-06-03"
+    },
+    "3665": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "貿聯-KY",
+      "start_on": "2026-05-20",
+      "expires_on": "2026-06-02"
+    },
+    "3675": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "德微",
+      "start_on": "2026-05-25",
+      "expires_on": "2026-06-05"
+    },
+    "4127": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "天良",
+      "start_on": "2026-05-27",
+      "expires_on": "2026-06-09"
+    },
+    "45421": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "科嶠一",
+      "start_on": "2026-05-28",
+      "expires_on": "2026-06-10"
+    },
+    "4722": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "國精化",
+      "start_on": "2026-05-26",
+      "expires_on": "2026-06-08"
+    },
+    "47223": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "國精化三",
+      "start_on": "2026-05-26",
+      "expires_on": "2026-06-08"
+    },
+    "4916": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "事欣科",
+      "start_on": "2026-05-26",
+      "expires_on": "2026-06-08"
+    },
+    "49165": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "事欣科五",
+      "start_on": "2026-05-25",
+      "expires_on": "2026-06-05"
+    },
+    "4919": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "新唐",
+      "start_on": "2026-05-28",
+      "expires_on": "2026-06-10"
+    },
+    "4958": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "臻鼎-KY",
+      "start_on": "2026-05-28",
+      "expires_on": "2026-06-10"
+    },
+    "4971": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "IET-KY",
+      "start_on": "2026-05-19",
+      "expires_on": "2026-06-01"
+    },
+    "5228": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "鈺鎧",
+      "start_on": "2026-05-18",
+      "expires_on": "2026-05-29"
+    },
+    "5321": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "美而快",
+      "start_on": "2026-05-25",
+      "expires_on": "2026-06-05"
+    },
+    "53211": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "美而快一",
+      "start_on": "2026-05-25",
+      "expires_on": "2026-06-05"
+    },
+    "6173": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "信昌電",
+      "start_on": "2026-05-28",
+      "expires_on": "2026-06-10"
+    },
+    "6182": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "合晶",
+      "start_on": "2026-05-28",
+      "expires_on": "2026-06-10"
+    },
+    "61827": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "合晶七",
+      "start_on": "2026-05-28",
+      "expires_on": "2026-06-10"
+    },
+    "61828": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "合晶八",
+      "start_on": "2026-05-28",
+      "expires_on": "2026-06-10"
+    },
+    "6217": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "中探針",
+      "start_on": "2026-05-20",
+      "expires_on": "2026-06-02"
+    },
+    "6239": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "力成",
+      "start_on": "2026-05-29",
+      "expires_on": "2026-06-11"
+    },
+    "6271": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "同欣電",
+      "start_on": "2026-05-28",
+      "expires_on": "2026-06-10"
+    },
+    "6405": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "悅城",
+      "start_on": "2026-05-29",
+      "expires_on": "2026-06-11"
+    },
+    "6449": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "鈺邦",
+      "start_on": "2026-05-19",
+      "expires_on": "2026-06-01"
+    },
+    "6538": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "倉和",
+      "start_on": "2026-05-25",
+      "expires_on": "2026-06-05"
+    },
+    "65381": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "倉和一",
+      "start_on": "2026-05-25",
+      "expires_on": "2026-06-05"
+    },
+    "6570": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "維田",
+      "start_on": "2026-05-28",
+      "expires_on": "2026-06-10"
+    },
+    "6742": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "澤米",
+      "start_on": "2026-05-25",
+      "expires_on": "2026-06-05"
+    },
+    "6806": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "森崴能源",
+      "start_on": "2026-05-21",
+      "expires_on": "2026-06-03"
+    },
+    "68061": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "森崴能源一",
+      "start_on": "2026-05-21",
+      "expires_on": "2026-06-03"
+    },
+    "6821": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "聯寶",
+      "start_on": "2026-05-29",
+      "expires_on": "2026-06-11"
+    },
+    "68211": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "聯寶一",
+      "start_on": "2026-05-29",
+      "expires_on": "2026-06-11"
+    },
+    "6829": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "千附精密",
+      "start_on": "2026-05-18",
+      "expires_on": "2026-05-29"
+    },
+    "6834": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "天二科技",
+      "start_on": "2026-05-25",
+      "expires_on": "2026-06-05"
+    },
+    "6906": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "現觀科",
+      "start_on": "2026-05-28",
+      "expires_on": "2026-06-10"
+    },
+    "6924": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "榮惠-KY創",
+      "start_on": "2026-05-20",
+      "expires_on": "2026-06-02"
+    },
+    "722723": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "新復興統一58購02",
+      "start_on": "2026-05-21",
+      "expires_on": "2026-06-03"
+    },
+    "72381U": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "萬潤群益56售01",
+      "start_on": "2026-05-25",
+      "expires_on": "2026-06-05"
+    },
+    "724481": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "正基統一59購02",
+      "start_on": "2026-05-18",
+      "expires_on": "2026-05-29"
+    },
+    "725744": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "新復興統一5A購01",
+      "start_on": "2026-05-19",
+      "expires_on": "2026-06-01"
+    },
+    "7610": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "聯友金屬-創",
+      "start_on": "2026-05-25",
+      "expires_on": "2026-06-05"
+    },
+    "76101": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "聯友金屬一創",
+      "start_on": "2026-05-25",
+      "expires_on": "2026-06-05"
+    },
+    "7751": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "竑騰",
+      "start_on": "2026-05-18",
+      "expires_on": "2026-05-29"
+    },
+    "8021": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "twse",
+      "name": "尖點",
+      "start_on": "2026-05-26",
+      "expires_on": "2026-06-08"
+    },
+    "80212": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "尖點二",
+      "start_on": "2026-05-26",
+      "expires_on": "2026-06-08"
+    },
+    "8027": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "鈦昇",
+      "start_on": "2026-05-25",
+      "expires_on": "2026-06-05"
+    },
+    "80273": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "鈦昇三",
+      "start_on": "2026-05-19",
+      "expires_on": "2026-06-01"
+    },
+    "8042": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "金山電",
+      "start_on": "2026-05-28",
+      "expires_on": "2026-06-10"
+    },
+    "80426": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "金山電六",
+      "start_on": "2026-05-28",
+      "expires_on": "2026-06-10"
+    },
+    "8091": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "翔名",
+      "start_on": "2026-05-20",
+      "expires_on": "2026-06-02"
+    },
+    "80914": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "翔名四",
+      "start_on": "2026-05-20",
+      "expires_on": "2026-06-02"
+    },
+    "8291": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "尚茂",
+      "start_on": "2026-05-20",
+      "expires_on": "2026-06-02"
+    },
+    "8444": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "綠河-KY",
+      "start_on": "2026-05-18",
+      "expires_on": "2026-05-29"
+    },
+    "8455": {
+      "reason": "處置股，排除不能現沖標的",
+      "source": "tpex",
+      "name": "大拓-KY",
+      "start_on": "2026-05-21",
+      "expires_on": "2026-06-03"
+    }
+  },
+  "updated_at": "2026-05-29T09:25:07+08:00",
+  "official_sources": [
+    "https://www.twse.com.tw/rwd/zh/announcement/punish?response=json",
+    "https://www.tpex.org.tw/www/zh-tw/bulletin/disposal?response=json"
+  ]
+}

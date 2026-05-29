@@ -458,6 +458,18 @@ class TestAnalyze:
         expected_avg = (0.10 + 0.06 - 0.04) / 3 * 100
         assert result["avg_return_pct"] == pytest.approx(expected_avg, rel=0.01)
 
+    def test_max_drawdown_is_computed_from_equity_curve(self):
+        cfg = BacktestConfig(starting_capital=1_000_000, capital_per_trade=100_000)
+        trades = [
+            _make_trade(net_return=0.10),
+            _make_trade(net_return=-0.20),
+        ]
+
+        result = analyze(trades, cfg)
+
+        # Equity: 1,010,000 -> 990,000, drawdown = -20,000 / 1,010,000.
+        assert result["max_drawdown_pct"] == pytest.approx(-1.9802, rel=0.001)
+
     def test_result_contains_all_key_fields(self):
         trades = [_make_trade()]
         result = analyze(trades, _DEFAULT_CFG)

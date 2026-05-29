@@ -4,7 +4,6 @@ Tests for the day-trading signal logic in test_analysis_data.py.
 Covers:
   - Utility helpers: _get, _to_float, _to_list
   - extract_analysis_data: all decision branches, score, entry triggers
-  - extract_investment_data: strong-buy and default paths
 """
 import time
 import pytest
@@ -14,7 +13,6 @@ from analysis import (
     _to_float,
     _to_list,
     extract_analysis_data,
-    extract_investment_data,
     reset_entry_memory,
 )
 
@@ -181,7 +179,7 @@ class TestExtractAnalysisDataDecision:
         assert result["decision"] == "avoid_short"
 
     def test_long_possible_via_buy_pressure(self):
-        # dominance = "buy", pressure_ratio < 0.8, last > mid, trend = "up"
+        # dominance = "buy", pressure_ratio below long threshold, last > mid, trend = "up"
         # last=102.1, avg=101.5 → trend=up, vwap_dist=0.59% (no fomo)
         # bid: 200+300=500, ask: 100+80=180, pressure_ratio=0.36 < 0.8
         # mid = (101.5+102.5)/2 = 102.0, last=102.1 > 102.0
@@ -191,6 +189,16 @@ class TestExtractAnalysisDataDecision:
             "asks": [{"price": 102.5, "size": 100}, {"price": 103.0, "size": 80}],
         }
         result = extract_analysis_data(t, q)
+        assert result["decision"] == "long_possible"
+
+    def test_long_possible_with_relaxed_buy_pressure_threshold(self):
+        # pressure_ratio=0.85: above old 0.8 threshold, below relaxed 0.9 threshold.
+        t = _ticker(last=102.1, high=106.0, low=99.0, avg=101.5, change_pct=2.0, volume=5000)
+        q = _quote(bid_price=101.5, bid_size=100, ask_price=102.5, ask_size=85)
+
+        result = extract_analysis_data(t, q)
+
+        assert result["structure"]["pressure_ratio"] == pytest.approx(0.85)
         assert result["decision"] == "long_possible"
 
     def test_short_possible_via_sell_pressure(self):
@@ -355,6 +363,25 @@ class TestExtractAnalysisDataEntryTriggers:
         result = extract_analysis_data(t, q)
         assert result["entry_signal"]["short_trigger"] is True
 
+    def test_long_trigger_uses_relaxed_buy_pressure_threshold(self):
+        t = _ticker(last=102.1, high=106.0, low=99.0, avg=101.5, change_pct=2.0, volume=5000)
+        q = _quote(bid_price=101.5, bid_size=100, ask_price=102.5, ask_size=85)
+
+        extract_analysis_data(t, q)
+        result = extract_analysis_data(t, q)
+
+        assert result["entry_signal"]["long_trigger"] is True
+
+    def test_short_trigger_uses_relaxed_sell_pressure_threshold(self):
+        t = _ticker(last=97.9, high=100.0, low=95.0, avg=100.0, change_pct=-2.0, volume=5000)
+        q = _quote(bid_price=97.5, bid_size=100, ask_price=98.5, ask_size=125)
+
+        extract_analysis_data(t, q)
+        result = extract_analysis_data(t, q)
+
+        assert result["structure"]["pressure_ratio"] == pytest.approx(1.25)
+        assert result["entry_signal"]["short_trigger"] is True
+
     def test_counter_resets_when_condition_disappears(self):
         t_long, q_long = self._long_ticker_quote()
         extract_analysis_data(t_long, q_long)  # long counter = 1
@@ -368,8 +395,7 @@ class TestExtractAnalysisDataEntryTriggers:
 
     def test_counter_resets_after_time_window_expires(self):
         t, q = self._long_ticker_quote()
-        # Pre-seed with a stale timestamp (61s ago)
-        stale = time.time() - 61
+        stale = time.time() - mod.ENTRY_CONFIRM_WINDOW_SECS - 1
         mod.entry_memory["2330"] = {
             "short": 0, "long": 3,
             "short_time": None, "long_time": stale,
@@ -403,6 +429,24 @@ class TestExtractAnalysisDataEntryTriggers:
         extract_analysis_data(t_a, q)  # 2330 trigger fires
         result_b = extract_analysis_data(t_b, q)  # 2454 only 1 call
         assert result_b["entry_signal"]["long_trigger"] is False
+
+    def test_entry_zone_scales_with_high_price_and_tick_size(self):
+        t = _ticker(last=803.0, high=810.0, low=790.0, avg=800.0, change_pct=1.0, volume=5000)
+        q = _quote(bid_price=799.0, bid_size=200, ask_price=801.0, ask_size=100)
+
+        result = extract_analysis_data(t, q)
+
+        assert result["decision"] == "long_possible"
+        assert result["entry_zone"] == {"lower": 797.0, "upper": 803.0}
+
+    def test_entry_zone_scales_with_low_price_and_tick_size(self):
+        t = _ticker(last=50.2, high=53.0, low=48.0, avg=50.0, change_pct=1.0, volume=5000)
+        q = _quote(bid_price=49.9, bid_size=200, ask_price=50.1, ask_size=100)
+
+        result = extract_analysis_data(t, q)
+
+        assert result["decision"] == "long_possible"
+        assert result["entry_zone"] == {"lower": 49.85, "upper": 50.2}
 
 
 # ── extract_analysis_data – output structure ──────────────────────────────
@@ -445,66 +489,6 @@ class TestExtractAnalysisDataOutput:
         assert result["signal_grade"] == "A_long"
 
 
-# ── extract_investment_data ────────────────────────────────────────────────
-
-class TestExtractInvestmentData:
-    def _make_ticker(self, symbol="2330", last=110.0):
-        class T:
-            pass
-        t = T()
-        t.symbol = symbol
-        t.lastPrice = last
-        return t
-
-    def test_strong_buy_when_all_conditions_met(self):
-        # Bull alignment: last > ma5 > ma20 > ma60, growth yoy > 15, rsi in (50,75)
-        ticker = self._make_ticker(last=110.0)
-        daily = {"ma5": 108.0, "ma20": 105.0, "ma60": 100.0, "rsi": 60.0, "yoy": 25.0}
-        result = extract_investment_data(ticker, daily)
-        assert result["decision"] == "strong_buy_candidate"
-        assert result["signal_grade"] == "A"
-
-    def test_investment_watch_when_no_bull_ma_alignment(self):
-        # ma5 < ma20 → not bull
-        ticker = self._make_ticker(last=110.0)
-        daily = {"ma5": 103.0, "ma20": 105.0, "ma60": 100.0, "rsi": 60.0, "yoy": 25.0}
-        result = extract_investment_data(ticker, daily)
-        assert result["decision"] == "investment_watch"
-        assert result["signal_grade"] == "C"
-
-    def test_investment_watch_when_rsi_too_high(self):
-        # rsi >= 75 → fails condition
-        ticker = self._make_ticker(last=110.0)
-        daily = {"ma5": 108.0, "ma20": 105.0, "ma60": 100.0, "rsi": 78.0, "yoy": 25.0}
-        result = extract_investment_data(ticker, daily)
-        assert result["decision"] == "investment_watch"
-
-    def test_investment_watch_when_yoy_below_threshold(self):
-        # yoy <= 15 → is_growth = False
-        ticker = self._make_ticker(last=110.0)
-        daily = {"ma5": 108.0, "ma20": 105.0, "ma60": 100.0, "rsi": 60.0, "yoy": 10.0}
-        result = extract_investment_data(ticker, daily)
-        assert result["decision"] == "investment_watch"
-
-    def test_always_returns_type_investment(self):
-        ticker = self._make_ticker()
-        daily = {"ma5": 90.0, "ma20": 85.0, "ma60": 80.0, "rsi": 55.0, "yoy": 20.0}
-        result = extract_investment_data(ticker, daily)
-        assert result["type"] == "INVESTMENT"
-
-    def test_ma_status_bull(self):
-        ticker = self._make_ticker(last=110.0)
-        daily = {"ma5": 108.0, "ma20": 105.0, "ma60": 100.0, "rsi": 60.0, "yoy": 25.0}
-        result = extract_investment_data(ticker, daily)
-        assert result["indicators"]["ma_status"] == "多頭排列"
-
-    def test_ma_status_consolidating(self):
-        ticker = self._make_ticker(last=110.0)
-        daily = {"ma5": 103.0, "ma20": 105.0, "ma60": 100.0, "rsi": 60.0, "yoy": 25.0}
-        result = extract_investment_data(ticker, daily)
-        assert result["indicators"]["ma_status"] == "整理中"
-
-
 # ── reset_entry_memory & edge cases ───────────────────────────────────────────
 
 class TestResetEntryMemory:
@@ -523,6 +507,14 @@ class TestResetEntryMemory:
 
     def test_reset_nonexistent_symbol_is_noop(self):
         reset_entry_memory("XXXX")  # must not raise
+
+    def test_expired_symbols_are_pruned_during_analysis(self):
+        old = time.time() - mod.ENTRY_MEMORY_TTL_SECS - 1
+        mod.entry_memory["OLD"] = {"short": 0, "long": 1, "short_time": None, "long_time": old}
+
+        extract_analysis_data(_ticker(symbol="2330"), _quote())
+
+        assert "OLD" not in mod.entry_memory
 
     def test_timestamp_zero_treated_as_in_window(self):
         """time_key == 0 (falsy epoch) must NOT skip the window check."""

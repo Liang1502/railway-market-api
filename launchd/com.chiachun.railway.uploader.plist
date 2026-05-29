@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.chiachun.railway.uploader</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>cd /Users/chiachun/Desktop/railway-market-api &amp;&amp; exec /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 -u uploader.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/chiachun</string>
+
+    <!-- 開機/load 後自動啟動 -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- 掛掉自動重啟（含 crash / WebSocket 永久斷線） -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- 連續快速重啟保護：兩次重啟之間至少間隔 30 秒 -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/chiachun/Library/Logs/railway-market-api/uploader.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/chiachun/Library/Logs/railway-market-api/uploader.stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>

@@ -1,8 +1,13 @@
 import time
+import os
 import requests
+from dotenv import load_dotenv
 
-# 👉 你的 Railway 雲端主機掃描端點
-API_URL = "https://web-production-641b.up.railway.app/scan"
+load_dotenv()
+
+# 👉 API 掃描端點
+_BASE = os.getenv("RAILWAY_API_URL", "http://127.0.0.1:8000")
+API_URL = f"{_BASE.rstrip('/')}/scan"
 
 # 👉 掃描間隔（秒）
 INTERVAL = 10
