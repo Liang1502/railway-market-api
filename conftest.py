@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 # Ensure project root is on sys.path so test files can import project modules.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# main.py / uploader.py 要求 API_SECRET_TOKEN 必須存在（取消 fallback 後的硬要求）
+# Tests use a stable token even when the local shell does not export one.
 os.environ.setdefault("API_SECRET_TOKEN", "test_token")
 
 # ── fubon_neo ──────────────────────────────────────────────────────────────

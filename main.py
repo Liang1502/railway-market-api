@@ -56,7 +56,7 @@ async def _save_watch_set() -> None:
 
 watch_set: Set[str] = _load_watch_set()   # watch.py 請求的標的，永久追蹤不清除
 
-MY_SECRET_TOKEN = os.environ["API_SECRET_TOKEN"]
+MY_SECRET_TOKEN = os.getenv("API_SECRET_TOKEN", "ChiaChun_Super_Secret_888")
 
 STALE_SECS = int(os.getenv("STALE_SECS", "180"))   # 超過此秒數視為過期，重新觸發 wishlist
 TW_TZ = timezone(timedelta(hours=8))
