@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Header
 from typing import Dict, Set
 from datetime import datetime, timedelta, timezone
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -56,7 +57,20 @@ async def _save_watch_set() -> None:
 
 watch_set: Set[str] = _load_watch_set()   # watch.py 請求的標的，永久追蹤不清除
 
-MY_SECRET_TOKEN = os.getenv("API_SECRET_TOKEN", "ChiaChun_Super_Secret_888")
+MY_SECRET_TOKEN = os.getenv("API_SECRET_TOKEN")
+if not MY_SECRET_TOKEN:
+    raise RuntimeError("API_SECRET_TOKEN must be set")
+
+
+def _require_bearer_token(authorization: str | None) -> None:
+    try:
+        is_valid = authorization is not None and hmac.compare_digest(
+            authorization.encode("utf-8"), f"Bearer {MY_SECRET_TOKEN}".encode("utf-8")
+        )
+    except Exception:
+        is_valid = False
+    if not is_valid:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 STALE_SECS = int(os.getenv("STALE_SECS", "180"))   # 超過此秒數視為過期，重新觸發 wishlist
 TW_TZ = timezone(timedelta(hours=8))
@@ -139,8 +153,7 @@ def is_daytrade_excluded(data: dict, exclusions: Dict[str, dict]) -> bool:
 # =============================
 @app.post("/update")
 def update_data(data: dict, authorization: str = Header(None)):
-    if authorization != f"Bearer {MY_SECRET_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_bearer_token(authorization)
 
     symbol = data.get("symbol")
     if symbol:
@@ -263,8 +276,7 @@ def get_watch_list():
 
 @app.delete("/watch-list/{symbol}")
 async def remove_from_watch_list(symbol: str, authorization: str = Header(None)):
-    if authorization != f"Bearer {MY_SECRET_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_bearer_token(authorization)
     async with _watch_set_lock:
         if symbol in watch_set:
             watch_set.discard(symbol)
